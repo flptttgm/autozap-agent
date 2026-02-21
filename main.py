@@ -9,6 +9,7 @@ Recebe chamadas da Edge Function process-message.
 import os
 import time
 import logging
+import traceback
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -17,14 +18,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# LangSmith tracing
-if os.environ.get("LANGCHAIN_TRACING_V2") == "true":
-    os.environ.setdefault("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
-
-from agent.graph import AutozapAgent
-
 # ─── Logging ───
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger("autozap-agent")
 
 # ─── App ───
@@ -40,16 +38,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ─── Agent Instances (cached by config) ───
-_agents: dict[str, AutozapAgent] = {}
-
-def get_agent(ai_api_key: str | None = None, ai_model: str | None = None) -> AutozapAgent:
-    """Get or create an agent instance. Caches by API key + model combo."""
-    key = f"{ai_api_key or 'env'}:{ai_model or 'default'}"
-    if key not in _agents:
-        _agents[key] = AutozapAgent(ai_api_key=ai_api_key, ai_model=ai_model)
-    return _agents[key]
 
 
 # ─── Models ───
@@ -68,6 +56,31 @@ class ProcessResponse(BaseModel):
     status: str
     tools_used: list[str] = []
     latency_ms: float = 0
+
+
+# ─── Agent (lazy loaded) ───
+_agents: dict[str, object] = {}
+_agent_class = None
+
+
+def _get_agent_class():
+    """Lazy import of AutozapAgent to avoid crashing on startup."""
+    global _agent_class
+    if _agent_class is None:
+        logger.info("Loading AutozapAgent class (first request)...")
+        from agent.graph import AutozapAgent
+        _agent_class = AutozapAgent
+        logger.info("AutozapAgent loaded successfully!")
+    return _agent_class
+
+
+def get_agent(ai_api_key: str | None = None, ai_model: str | None = None):
+    """Get or create an agent instance. Caches by API key + model combo."""
+    AgentClass = _get_agent_class()
+    key = f"{ai_api_key or 'env'}:{ai_model or 'default'}"
+    if key not in _agents:
+        _agents[key] = AgentClass(ai_api_key=ai_api_key, ai_model=ai_model)
+    return _agents[key]
 
 
 # ─── Routes ───
@@ -117,8 +130,21 @@ async def process_message(req: ProcessRequest, request: Request):
         )
 
     except Exception as e:
-        logger.error(f"[process] Error: {e}", exc_info=True)
+        logger.error(f"[process] Error: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("="*50)
+    logger.info("Autozap Agent Service starting...")
+    logger.info(f"PORT={os.environ.get('PORT', 'not set')}")
+    logger.info(f"SUPABASE_URL={'set' if os.environ.get('SUPABASE_URL') else 'NOT SET'}")
+    logger.info(f"SUPABASE_SERVICE_ROLE_KEY={'set' if os.environ.get('SUPABASE_SERVICE_ROLE_KEY') else 'NOT SET'}")
+    logger.info(f"LANGCHAIN_TRACING_V2={os.environ.get('LANGCHAIN_TRACING_V2', 'not set')}")
+    logger.info("Server ready! Agent will load on first request.")
+    logger.info("="*50)
 
 
 # ─── Run ───
