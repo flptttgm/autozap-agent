@@ -9,8 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Expose port
-EXPOSE 8000
+# Railway injects $PORT at runtime
+ENV PORT=8000
 
-# Start the server (Railway injects $PORT)
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Start with python (not uvicorn directly) for better error output
+CMD ["python", "main.py"]

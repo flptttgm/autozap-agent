@@ -2,17 +2,20 @@
 ============================================
 Autozap Agent Service - FastAPI Server
 ============================================
-Ponto de entrada HTTP para o agente Python.
-Recebe chamadas da Edge Function process-message.
 """
 
 import os
+import sys
 import time
 import logging
 import traceback
 
-from dotenv import load_dotenv
-load_dotenv()
+# Load .env for local dev
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,16 +24,13 @@ from pydantic import BaseModel
 # ─── Logging ───
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
 )
-logger = logging.getLogger("autozap-agent")
+logger = logging.getLogger("autozap")
 
 # ─── App ───
-app = FastAPI(
-    title="Autozap Agent Service",
-    description="Agente Python com LangChain para processamento inteligente de mensagens",
-    version="1.0.0",
-)
+app = FastAPI(title="Autozap Agent", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,24 +58,22 @@ class ProcessResponse(BaseModel):
     latency_ms: float = 0
 
 
-# ─── Agent (lazy loaded) ───
-_agents: dict[str, object] = {}
+# ─── Agent (lazy) ───
+_agents: dict = {}
 _agent_class = None
 
 
 def _get_agent_class():
-    """Lazy import of AutozapAgent to avoid crashing on startup."""
     global _agent_class
     if _agent_class is None:
-        logger.info("Loading AutozapAgent class (first request)...")
+        logger.info("Importing AutozapAgent...")
         from agent.graph import AutozapAgent
         _agent_class = AutozapAgent
-        logger.info("AutozapAgent loaded successfully!")
+        logger.info("AutozapAgent imported OK")
     return _agent_class
 
 
-def get_agent(ai_api_key: str | None = None, ai_model: str | None = None):
-    """Get or create an agent instance. Caches by API key + model combo."""
+def get_agent(ai_api_key=None, ai_model=None):
     AgentClass = _get_agent_class()
     key = f"{ai_api_key or 'env'}:{ai_model or 'default'}"
     if key not in _agents:
@@ -84,6 +82,7 @@ def get_agent(ai_api_key: str | None = None, ai_model: str | None = None):
 
 
 # ─── Routes ───
+@app.get("/")
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "autozap-agent", "version": "1.0.0"}
@@ -91,21 +90,15 @@ async def health():
 
 @app.post("/process", response_model=ProcessResponse)
 async def process_message(req: ProcessRequest, request: Request):
-    """Processa uma mensagem e retorna a resposta do agente."""
-
-    # Autenticação simples
     agent_secret = os.environ.get("AGENT_SECRET", "")
     if agent_secret:
-        auth_header = request.headers.get("authorization", "")
-        token = auth_header.replace("Bearer ", "")
-        if token != agent_secret:
+        auth = request.headers.get("authorization", "")
+        if auth.replace("Bearer ", "") != agent_secret:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-    start_time = time.time()
-
+    start = time.time()
     try:
-        agent_instance = get_agent(ai_api_key=req.ai_api_key, ai_model=req.ai_model)
-
+        agent_instance = get_agent(req.ai_api_key, req.ai_model)
         result = await agent_instance.process(
             lead_id=req.lead_id,
             workspace_id=req.workspace_id,
@@ -113,43 +106,22 @@ async def process_message(req: ProcessRequest, request: Request):
             agent_config=req.agent_config,
             instance_id=req.instance_id,
         )
-
-        latency = (time.time() - start_time) * 1000
-
-        logger.info(
-            f"[process] lead={req.lead_id[:8]}... "
-            f"tools={result.get('tools_used', [])} "
-            f"latency={latency:.0f}ms"
-        )
-
+        ms = (time.time() - start) * 1000
+        logger.info(f"lead={req.lead_id[:8]}... tools={result.get('tools_used',[])} {ms:.0f}ms")
         return ProcessResponse(
             response=result.get("response"),
             status=result.get("status", "success"),
             tools_used=result.get("tools_used", []),
-            latency_ms=round(latency, 1),
+            latency_ms=round(ms, 1),
         )
-
     except Exception as e:
-        logger.error(f"[process] Error: {e}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Error: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.on_event("startup")
-async def startup_event():
-    logger.info("="*50)
-    logger.info("Autozap Agent Service starting...")
-    logger.info(f"PORT={os.environ.get('PORT', 'not set')}")
-    logger.info(f"SUPABASE_URL={'set' if os.environ.get('SUPABASE_URL') else 'NOT SET'}")
-    logger.info(f"SUPABASE_SERVICE_ROLE_KEY={'set' if os.environ.get('SUPABASE_SERVICE_ROLE_KEY') else 'NOT SET'}")
-    logger.info(f"LANGCHAIN_TRACING_V2={os.environ.get('LANGCHAIN_TRACING_V2', 'not set')}")
-    logger.info("Server ready! Agent will load on first request.")
-    logger.info("="*50)
-
-
-# ─── Run ───
+# ─── Startup ───
 if __name__ == "__main__":
     import uvicorn
-
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    logger.info(f"Starting on port {port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
