@@ -17,10 +17,9 @@ from supabase import Client
 class RAGEngine:
     """Motor de RAG avançado com busca vetorial e reranking."""
 
-    def __init__(self, supabase: Client, ai_api_key: str, ai_api_url: str = ""):
+    def __init__(self, supabase: Client, ai_api_key: str):
         self.supabase = supabase
         self.ai_api_key = ai_api_key
-        self.ai_api_url = ai_api_url
 
     async def search(
         self,
@@ -100,16 +99,18 @@ class RAGEngine:
         return "\n".join(parts)
 
     async def _generate_embedding(self, text: str) -> list[float]:
-        """Gera embedding usando OpenAI (text-embedding-3-small)."""
+        """Gera embedding usando Gemini (text-embedding-004)."""
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={self.ai_api_key}"
+
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                "https://api.openai.com/v1/embeddings",
-                headers={
-                    "Authorization": f"Bearer {self.ai_api_key}",
-                    "Content-Type": "application/json",
+                url,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "model": "models/text-embedding-004",
+                    "content": {"parts": [{"text": text}]},
                 },
-                json={"model": "text-embedding-3-small", "input": text},
             )
             response.raise_for_status()
             data = response.json()
-            return data["data"][0]["embedding"]
+            return data["embedding"]["values"]
