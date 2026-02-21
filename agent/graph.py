@@ -1,0 +1,194 @@
+"""
+============================================
+Agent Graph - LangChain Agent with Memory & Tools
+============================================
+O cérebro do agente. Orquestra memória, RAG e ferramentas
+em um loop de raciocínio (ReAct pattern).
+"""
+
+import os
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from supabase import create_client
+
+from .memory import MemoryManager
+from .rag import RAGEngine
+from .tools import create_tools
+from .prompts import build_system_prompt
+
+
+class AutozapAgent:
+    """Agente principal do Autozap com memória, RAG e ferramentas."""
+
+    def __init__(self):
+        supabase_url = os.environ["SUPABASE_URL"]
+        supabase_key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+        self.supabase = create_client(supabase_url, supabase_key)
+
+        ai_api_key = os.environ["AI_API_KEY"]
+        ai_model = os.environ.get("AI_MODEL", "gemini-2.0-flash")
+
+        self.llm = ChatGoogleGenerativeAI(
+            model=ai_model,
+            google_api_key=ai_api_key,
+            temperature=0.3,
+            max_output_tokens=800,
+            convert_system_message_to_human=False,
+        )
+
+        # LLM leve para tarefas internas (resumos, extração)
+        self.llm_lite = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash-lite",
+            google_api_key=ai_api_key,
+            temperature=0.1,
+            max_output_tokens=300,
+        )
+
+        self.memory_manager = MemoryManager(self.supabase)
+        self.rag_engine = RAGEngine(self.supabase, ai_api_key)
+
+    async def process(
+        self,
+        lead_id: str,
+        workspace_id: str,
+        message: str,
+        agent_config: dict,
+        instance_id: str | None = None,
+    ) -> dict:
+        """Processa uma mensagem e retorna a resposta do agente."""
+
+        # 1. CARREGAR MEMÓRIA (paralelo com RAG)
+        memory = await self.memory_manager.load(lead_id, workspace_id)
+
+        # Checar se AI está pausada
+        if memory.get("ai_paused"):
+            return {"response": None, "status": "ai_paused"}
+
+        # 2. RAG - Buscar no knowledge base
+        knowledge_context = await self.rag_engine.search(
+            workspace_id=workspace_id,
+            query=message,
+            agent_id=agent_config.get("id"),
+        )
+
+        # 3. CONSTRUIR PROMPT DINÂMICO
+        lead_name = None
+        try:
+            lead_result = (
+                self.supabase.table("leads")
+                .select("name")
+                .eq("id", lead_id)
+                .single()
+                .execute()
+            )
+            lead_name = lead_result.data.get("name") if lead_result.data else None
+        except Exception:
+            pass
+
+        memory_context = self.memory_manager.format_for_prompt(memory)
+        is_returning = len(memory.get("history", [])) > 0
+
+        system_prompt = build_system_prompt(
+            agent_config=agent_config,
+            memory_context=memory_context,
+            knowledge_context=knowledge_context,
+            lead_name=lead_name,
+            is_returning=is_returning,
+        )
+
+        # 4. CRIAR FERRAMENTAS
+        tools = create_tools(self.supabase, workspace_id, lead_id)
+
+        # 5. MONTAR AGENTE COM LANGCHAIN
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ])
+
+        agent = create_tool_calling_agent(self.llm, tools, prompt)
+        executor = AgentExecutor(
+            agent=agent,
+            tools=tools,
+            verbose=True,
+            max_iterations=5,
+            handle_parsing_errors=True,
+            return_intermediate_steps=True,
+        )
+
+        # Preparar histórico de chat para LangChain
+        chat_history = self.memory_manager.get_chat_messages(memory, limit=20)
+
+        # 6. EXECUTAR AGENTE
+        try:
+            result = await executor.ainvoke({
+                "input": message,
+                "chat_history": chat_history,
+            })
+
+            ai_response = result["output"]
+        except Exception as e:
+            print(f"[Agent] Error during execution: {e}")
+            # Fallback: chamada direta sem ferramentas
+            ai_response = await self._fallback_response(
+                system_prompt, chat_history, message
+            )
+
+        # 7. Converter markdown para WhatsApp
+        final_response = self._convert_to_whatsapp(ai_response)
+
+        # 8. SALVAR MEMÓRIA
+        new_messages = [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": final_response},
+        ]
+        await self.memory_manager.save(
+            memory_id=memory.get("id"),
+            lead_id=lead_id,
+            workspace_id=workspace_id,
+            new_messages=new_messages,
+            current_memory=memory,
+            llm=self.llm_lite,
+        )
+
+        return {
+            "response": final_response,
+            "status": "success",
+            "tools_used": [
+                step[0].tool for step in result.get("intermediate_steps", [])
+            ] if isinstance(result, dict) else [],
+        }
+
+    async def _fallback_response(
+        self, system_prompt: str, chat_history: list, message: str
+    ) -> str:
+        """Resposta direta sem ferramentas (fallback de segurança)."""
+        messages = [SystemMessage(content=system_prompt)]
+        messages.extend(chat_history[-10:])
+        messages.append(HumanMessage(content=message))
+
+        response = await self.llm.ainvoke(messages)
+        return response.content
+
+    @staticmethod
+    def _convert_to_whatsapp(text: str) -> str:
+        """Converte markdown para formatação WhatsApp."""
+        if not text:
+            return text
+
+        import re
+
+        result = text
+        # **bold** → *bold*
+        result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
+        # __italic__ → _italic_
+        result = re.sub(r"__(.+?)__", r"_\1_", result)
+        # ### Header → *Header*
+        result = re.sub(r"^#{1,3}\s+(.+)$", r"*\1*", result, flags=re.MULTILINE)
+        # Remove code block markers
+        result = re.sub(r"```[\w]*\n?", "", result)
+
+        return result.strip()
