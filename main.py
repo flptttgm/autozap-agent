@@ -41,14 +41,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Agent Instance (singleton) ───
-agent: AutozapAgent | None = None
+# ─── Agent Instances (cached by config) ───
+_agents: dict[str, AutozapAgent] = {}
 
-def get_agent() -> AutozapAgent:
-    global agent
-    if agent is None:
-        agent = AutozapAgent()
-    return agent
+def get_agent(ai_api_key: str | None = None, ai_model: str | None = None) -> AutozapAgent:
+    """Get or create an agent instance. Caches by API key + model combo."""
+    key = f"{ai_api_key or 'env'}:{ai_model or 'default'}"
+    if key not in _agents:
+        _agents[key] = AutozapAgent(ai_api_key=ai_api_key, ai_model=ai_model)
+    return _agents[key]
 
 
 # ─── Models ───
@@ -58,6 +59,8 @@ class ProcessRequest(BaseModel):
     message: str
     agent_config: dict = {}
     instance_id: str | None = None
+    ai_api_key: str | None = None
+    ai_model: str | None = None
 
 
 class ProcessResponse(BaseModel):
@@ -88,7 +91,7 @@ async def process_message(req: ProcessRequest, request: Request):
     start_time = time.time()
 
     try:
-        agent_instance = get_agent()
+        agent_instance = get_agent(ai_api_key=req.ai_api_key, ai_model=req.ai_model)
 
         result = await agent_instance.process(
             lead_id=req.lead_id,

@@ -22,17 +22,21 @@ from .prompts import build_system_prompt
 class AutozapAgent:
     """Agente principal do Autozap com memória, RAG e ferramentas."""
 
-    def __init__(self):
+    def __init__(self, ai_api_key: str | None = None, ai_model: str | None = None):
         supabase_url = os.environ["SUPABASE_URL"]
         supabase_key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
         self.supabase = create_client(supabase_url, supabase_key)
 
-        ai_api_key = os.environ["AI_API_KEY"]
-        ai_model = os.environ.get("AI_MODEL", "gemini-2.0-flash")
+        # AI keys: request > env var > error
+        resolved_key = ai_api_key or os.environ.get("AI_API_KEY", "")
+        resolved_model = ai_model or os.environ.get("AI_MODEL", "gemini-2.0-flash")
+
+        if not resolved_key:
+            raise ValueError("AI_API_KEY must be provided via request or environment variable")
 
         self.llm = ChatGoogleGenerativeAI(
-            model=ai_model,
-            google_api_key=ai_api_key,
+            model=resolved_model,
+            google_api_key=resolved_key,
             temperature=0.3,
             max_output_tokens=800,
             convert_system_message_to_human=False,
@@ -41,13 +45,13 @@ class AutozapAgent:
         # LLM leve para tarefas internas (resumos, extração)
         self.llm_lite = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash-lite",
-            google_api_key=ai_api_key,
+            google_api_key=resolved_key,
             temperature=0.1,
             max_output_tokens=300,
         )
 
         self.memory_manager = MemoryManager(self.supabase)
-        self.rag_engine = RAGEngine(self.supabase, ai_api_key)
+        self.rag_engine = RAGEngine(self.supabase, resolved_key)
 
     async def process(
         self,
