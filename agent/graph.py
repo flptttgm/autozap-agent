@@ -64,8 +64,11 @@ class AutozapAgent:
     ) -> dict:
         """Processa uma mensagem e retorna a resposta do agente."""
 
-        # 1. CARREGAR MEMÓRIA (paralelo com RAG)
+        # 1. CARREGAR MEMÓRIA
         memory = await self.memory_manager.load(lead_id, workspace_id)
+
+        # 1b. SINCRONIZAR mensagens perdidas (hands-on / pausa)
+        memory = await self.memory_manager.sync_missed_messages(lead_id, memory)
 
         # Checar se AI está pausada
         if memory.get("ai_paused"):

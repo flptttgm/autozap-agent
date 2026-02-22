@@ -25,7 +25,7 @@ class MemoryManager:
         """Carrega todas as camadas de memória de um lead."""
         result = (
             self.supabase.table("chat_memory")
-            .select("id, conversation_history, conversation_summary, context_flags, lead_profile")
+            .select("id, conversation_history, conversation_summary, context_flags, lead_profile, last_interaction")
             .eq("lead_id", lead_id)
             .eq("workspace_id", workspace_id)
             .maybe_single()
@@ -40,6 +40,7 @@ class MemoryManager:
                 "context_flags": {},
                 "lead_profile": {},
                 "ai_paused": False,
+                "last_interaction": None,
             }
 
         data = result.data
@@ -50,7 +51,55 @@ class MemoryManager:
             "context_flags": data.get("context_flags", {}),
             "lead_profile": data.get("lead_profile", {}),
             "ai_paused": data.get("context_flags", {}).get("ai_paused", False),
+            "last_interaction": data.get("last_interaction"),
         }
+
+    async def sync_missed_messages(self, lead_id: str, memory: dict) -> dict:
+        """
+        Sincroniza mensagens que aconteceram durante períodos de pausa/hands-on.
+        Busca na tabela 'messages' tudo que ocorreu APÓS last_interaction do chat_memory.
+        Retorna o memory atualizado com as mensagens faltantes injetadas.
+        """
+        last_interaction = memory.get("last_interaction")
+        if not last_interaction:
+            # Memória nova, sem histórico — nada para sincronizar
+            return memory
+
+        try:
+            result = (
+                self.supabase.table("messages")
+                .select("content, direction, created_at")
+                .eq("lead_id", lead_id)
+                .gt("created_at", last_interaction)
+                .in_("direction", ["inbound", "outbound"])
+                .order("created_at", desc=False)
+                .limit(30)
+                .execute()
+            )
+
+            missed = result.data or []
+            if not missed:
+                return memory
+
+            # Converter para formato de histórico do chat_memory
+            missed_history = []
+            for msg in missed:
+                content = msg.get("content", "")
+                if not content or not content.strip():
+                    continue
+                role = "user" if msg.get("direction") == "inbound" else "assistant"
+                missed_history.append({"role": role, "content": content})
+
+            if missed_history:
+                history = list(memory.get("history", []))
+                history.extend(missed_history)
+                memory["history"] = history
+                print(f"[Memory] 🔄 Synced {len(missed_history)} missed messages for lead {lead_id[:8]}...")
+
+        except Exception as e:
+            print(f"[Memory] ⚠️ Error syncing missed messages: {e}")
+
+        return memory
 
     async def save(
         self,
