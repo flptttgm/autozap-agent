@@ -60,6 +60,7 @@ class AutozapAgent:
         message: str,
         agent_config: dict,
         instance_id: str | None = None,
+        chat_id: str | None = None,
     ) -> dict:
         """Processa uma mensagem e retorna a resposta do agente."""
 
@@ -154,6 +155,7 @@ class AutozapAgent:
             memory_id=memory.get("id"),
             lead_id=lead_id,
             workspace_id=workspace_id,
+            chat_id=chat_id or lead_id,
             new_messages=new_messages,
             current_memory=memory,
             llm=self.llm_lite,

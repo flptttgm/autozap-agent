@@ -43,6 +43,7 @@ app.add_middleware(
 # ─── Models ───
 class ProcessRequest(BaseModel):
     lead_id: str
+    chat_id: str | None = None
     workspace_id: str
     message: str
     agent_config: dict = {}
@@ -101,6 +102,7 @@ async def process_message(req: ProcessRequest, request: Request):
         agent_instance = get_agent(req.ai_api_key, req.ai_model)
         result = await agent_instance.process(
             lead_id=req.lead_id,
+            chat_id=req.chat_id,
             workspace_id=req.workspace_id,
             message=req.message,
             agent_config=req.agent_config,

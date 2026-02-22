@@ -59,6 +59,7 @@ class MemoryManager:
         workspace_id: str,
         new_messages: list[dict],
         current_memory: dict,
+        chat_id: str | None = None,
         llm=None,
     ):
         """Salva memória atualizada com compressão inteligente."""
@@ -94,6 +95,7 @@ class MemoryManager:
         else:
             update_data["lead_id"] = lead_id
             update_data["workspace_id"] = workspace_id
+            update_data["chat_id"] = chat_id or lead_id
             self.supabase.table("chat_memory").insert(update_data).execute()
 
     async def _compress_history(
