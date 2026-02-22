@@ -13,8 +13,12 @@ from langchain_core.tools import tool
 from supabase import Client
 
 
-def create_tools(supabase: Client, workspace_id: str, lead_id: str):
-    """Cria ferramentas contextualizadas para o agente."""
+def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tools: list[str] | None = None):
+    """Cria ferramentas contextualizadas para o agente.
+
+    Args:
+        enabled_tools: Lista de nomes de ferramentas habilitadas. Se None, retorna todas.
+    """
 
     @tool
     def check_appointments(query: str = "") -> str:
@@ -179,4 +183,13 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str):
         except Exception as e:
             return f"Erro ao buscar info do lead: {e}"
 
-    return [check_appointments, check_availability, schedule_appointment, get_lead_info]
+    all_tools = {
+        "check_appointments": check_appointments,
+        "check_availability": check_availability,
+        "schedule_appointment": schedule_appointment,
+        "get_lead_info": get_lead_info,
+    }
+
+    if enabled_tools:
+        return [all_tools[name] for name in enabled_tools if name in all_tools]
+    return list(all_tools.values())
