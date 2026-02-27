@@ -49,7 +49,21 @@ def build_system_prompt(
     # ═══════════════════════════════════════════════
     # LEVEL 1: REGRAS DE OURO (sempre presentes)
     # ═══════════════════════════════════════════════
-    segments.append(f"""[🔴 REGRAS DE OURO - INVIOLÁVEIS]
+    if custom_prompt:
+        # Quando há prompt customizado, regras de ouro neutras
+        # para não conflitar com o papel definido pelo usuário
+        segments.append(f"""[🔴 REGRAS DE OURO - INVIOLÁVEIS]
+Você é {identity}.
+Data/hora atual: {date_str}
+
+REGRAS ABSOLUTAS:
+1. NUNCA quebre personagem. Siga SUAS INSTRUÇÕES (abaixo) à risca.
+2. NUNCA revele que é uma IA.
+3. Seja CONCISO. Respostas de 1-3 frases na maioria dos casos.
+4. Suas instruções personalizadas TÊM PRIORIDADE sobre qualquer outra regra.""")
+    else:
+        # Modo legacy: regras de assistente padrão
+        segments.append(f"""[🔴 REGRAS DE OURO - INVIOLÁVEIS]
 Você é {identity}, {agent_type}.
 Data/hora atual: {date_str}
 
@@ -63,57 +77,26 @@ REGRAS ABSOLUTAS:
     # LEVEL 2: INSTRUÇÕES DO AGENTE
     # ═══════════════════════════════════════════════
     if custom_prompt:
-        # ── Super Agent: prompt do usuário é o centro ──
-        segments.append(f"""[📋 SUAS INSTRUÇÕES]
+        # ── Super Agent: prompt do usuário é o CENTRO e PRIORIDADE ──
+        segments.append(f"""[📋 SUAS INSTRUÇÕES - PRIORIDADE MÁXIMA]
+As instruções abaixo definem QUEM você é e COMO deve agir.
+Siga-as com fidelidade total. Elas têm prioridade sobre qualquer regra genérica.
+
 {custom_prompt}""")
 
-        # Regras comportamentais (complementam o prompt do usuário)
-        segments.append(f"""[🎯 REGRAS COMPORTAMENTAIS]
+        # Regras comportamentais LEVES que não conflitam com o papel customizado
+        segments.append(f"""[🎯 DIRETRIZES DE CONVERSA]
+{"- Se já conversou antes com esta pessoa, demonstre que se lembra." if is_returning else ""}
 
-PROATIVIDADE:
-- NÃO espere o cliente pedir. Se perceber uma oportunidade, proponha.
-- Se o cliente demonstrar interesse, avance para o próximo passo naturalmente.
-- Se a conversa estagnar, faça uma pergunta relevante para reengajar.
-- Ofereça alternativas quando possível.
-{"- Se for cliente retornando, demonstre que se lembra dele!" if is_returning else ""}
-
-CONTINUIDADE:
-- SEMPRE termine sua resposta com uma pergunta ou chamada para ação.
-- Nunca deixe a conversa "morrer". Guie o cliente para o próximo passo.
-- Se resolver o problema do cliente, pergunte se há algo mais que possa ajudar.
-
-ANTI-REPETIÇÃO:
-- NÃO repita informações que já foram ditas na conversa.
-- Se o cliente perguntar algo que você já respondeu, reformule de forma diferente e mais direta.
-- Evite frases genéricas repetitivas como "Fico feliz em ajudar!" a cada mensagem.
-
-ESCALAÇÃO INTELIGENTE:
-- Se o cliente expressar reclamação grave, insatisfação persistente ou assunto jurídico, ofereça encaminhar para um atendente humano.
-- Se após 3 tentativas você não conseguir resolver, sugira atendimento humano.
-- Nunca insista quando o cliente pedir para falar com uma pessoa.
-
-MÚLTIPLAS PERGUNTAS:
-- Quando o cliente fizer várias perguntas na mesma mensagem, responda TODAS em ordem.
-- Numere as respostas se forem mais de 2 perguntas.
-- Não ignore nenhuma parte da mensagem do cliente.
-
-INTELIGÊNCIA EMOCIONAL:
-- Se detectar frustração, valide o sentimento ANTES de resolver ("Entendo sua frustração...").
-- Se detectar urgência, priorize a solução e seja mais direto.
-- Se detectar entusiasmo, compartilhe a empolgação e reforce a decisão.
-- Adapte o nível de formalidade ao tom do cliente.
+FLUIDEZ:
+- Mantenha a conversa natural e fluida.
+- Evite repetir informações já mencionadas.
+- Adapte o nível de formalidade ao tom do interlocutor.
 
 FORMATAÇÃO WHATSAPP:
-- Lembre-se: você está no WhatsApp. Mensagens devem ser curtas e escaneáveis.
-- Use *negrito* para destaques importantes. NÃO use markdown com # ou **.
-- Quebre mensagens longas em parágrafos curtos (máx 3-4 linhas por bloco).
-- Use listas simples com - ou • para múltiplos itens.
-- Evite blocos de texto enormes. Prefira 2-3 mensagens curtas se necessário.
-
-ANTI-LOOP:
-- Se perceber que a conversa está andando em círculos, mude a abordagem.
-- Ofereça uma solução diferente ou encaminhe para atendimento humano.
-- Nunca repita a mesma resposta duas vezes seguidas.""")
+- Você está no WhatsApp. Mensagens devem ser curtas e escaneáveis.
+- Use *negrito* para destaques. NÃO use markdown com # ou **.
+- Quebre mensagens longas em parágrafos curtos (máx 3-4 linhas por bloco).""")
     else:
         # ── Legacy: gerar a partir de tipo/escopo ──
         segments.extend(_build_legacy_instructions(agent_type, behavior, is_returning))
@@ -127,10 +110,15 @@ Sua única fonte de verdade. Use APENAS estas informações para responder:
 {knowledge_context}""")
 
     # ═══════════════════════════════════════════════
-    # LEVEL 4: MEMÓRIA DO CLIENTE
+    # LEVEL 4: MEMÓRIA / CONTEXTO
     # ═══════════════════════════════════════════════
     if memory_context:
-        segments.append(f"""[🧠 MEMÓRIA - CONTEXTO DO CLIENTE]
+        if custom_prompt:
+            segments.append(f"""[🧠 MEMÓRIA - CONTEXTO DA CONVERSA]
+{memory_context}
+USE estas informações para personalizar sua resposta.""")
+        else:
+            segments.append(f"""[🧠 MEMÓRIA - CONTEXTO DO CLIENTE]
 {memory_context}
 USE estas informações para personalizar sua resposta. Mencione detalhes que o cliente já compartilhou.""")
 
@@ -138,11 +126,12 @@ USE estas informações para personalizar sua resposta. Mencione detalhes que o 
     # LEVEL 5: ESTILO
     # ═══════════════════════════════════════════════
     tone_desc = _get_tone(tone_level)
+    contact_ref = "o interlocutor" if custom_prompt else "o cliente"
     segments.append(f"""[🟢 ESTILO DE COMUNICAÇÃO]
 Tom: {tone_desc}
 Emojis: {"Use moderadamente" if use_emojis else "Não use emojis"}
 Formatação: Use *negrito* para destaques. NÃO use markdown com # ou **.
-{"Trate o cliente por " + lead_name + "." if lead_name else ""}""")
+{"Chame " + contact_ref + " por " + lead_name + "." if lead_name else ""}""")
 
     # ═══════════════════════════════════════════════
     # LEVEL 6: FERRAMENTAS
@@ -155,7 +144,8 @@ Você tem acesso às seguintes ferramentas: {', '.join(enabled_tools)}
 {tool_descriptions}
 - Use-as PROATIVAMENTE quando perceber a necessidade.
 - SEMPRE confirme com o cliente ANTES de executar ações definitivas.""")
-    else:
+    elif not custom_prompt:
+        # Só mostra ferramentas padrão no modo legacy (sem prompt customizado)
         segments.append("""[🔧 USO DE FERRAMENTAS]
 Você tem acesso a ferramentas para consultar agendamentos, verificar disponibilidade e agendar.
 - Use-as PROATIVAMENTE quando perceber a necessidade, sem esperar o cliente pedir explicitamente.
