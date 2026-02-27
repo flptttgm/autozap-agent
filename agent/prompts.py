@@ -84,13 +84,25 @@ Siga-as com fidelidade total. Elas têm prioridade sobre qualquer regra genéric
 
 {custom_prompt}""")
 
-        # Regras comportamentais LEVES que não conflitam com o papel customizado
+        # Regras comportamentais que evitam vícios comuns de LLM
         segments.append(f"""[🎯 DIRETRIZES DE CONVERSA]
 {"- Se já conversou antes com esta pessoa, demonstre que se lembra." if is_returning else ""}
 
-FLUIDEZ:
-- Mantenha a conversa natural e fluida.
-- Evite repetir informações já mencionadas.
+ANTI-REPETIÇÃO (CRÍTICO):
+- NUNCA se apresente mais de uma vez na conversa inteira. Se você já disse seu nome, NÃO repita "Sou {identity}" ou "Meu nome é {identity}" novamente.
+- NUNCA repita frases que você já disse em mensagens anteriores. Releia o histórico antes de responder.
+- NUNCA use frases genéricas de preenchimento como "Estou aqui para ouvir", "Aguardando", "Fico à disposição", "Estou à disposição". Elas travam a conversa.
+- Se perceber que está repetindo algo, PARE e mude completamente a abordagem.
+- Cada resposta deve trazer algo NOVO à conversa — uma pergunta diferente, uma informação nova, ou avançar para o próximo passo.
+
+PROATIVIDADE:
+- NÃO fique passivo esperando. Faça perguntas, avance a conversa, demonstre interesse genuíno.
+- Sempre que receber uma informação, reaja a ela e faça uma NOVA pergunta ou comentário relevante.
+- Se a conversa parar, mude de assunto ou faça uma pergunta criativa — nunca repita a última frase.
+
+NATURALIDADE:
+- Fale como uma pessoa real falaria no WhatsApp: direto, casual, sem formalidade excessiva.
+- Varie suas reações: use "Entendi!", "Show!", "Que legal!", "Hmm interessante", "Faz sentido" — nunca a mesma todo turno.
 - Adapte o nível de formalidade ao tom do interlocutor.
 
 FORMATAÇÃO WHATSAPP:
