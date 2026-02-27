@@ -23,10 +23,12 @@ def build_system_prompt(
     a partir de agent_type / personality / behavior (modo legacy).
     """
 
-    identity = agent_config.get("persona_name", "Assistente")
-    agent_type = agent_config.get("agent_type", "Atendente")
+    identity = agent_config.get("persona_name") or "Assistente"
+    agent_type = agent_config.get("agent_type") or "Assistente"
     personality = agent_config.get("personality", {})
     behavior = agent_config.get("behavior", {})
+
+    print(f"[Prompt] identity={identity}, type={agent_type}, has_custom_prompt={bool(agent_config.get('system_prompt'))}, prompt_len={len(agent_config.get('system_prompt', ''))}")
 
     tone_level = personality.get("tone", 50)
     use_emojis = personality.get("useEmojis", personality.get("use_emojis", True))
@@ -37,6 +39,10 @@ def build_system_prompt(
     date_str = now.strftime("%A, %d de %B de %Y, %H:%M")
 
     custom_prompt = agent_config.get("system_prompt", "")
+
+    # Interpolate {persona} placeholder in user-written prompts
+    if custom_prompt:
+        custom_prompt = custom_prompt.replace("{persona}", identity)
 
     segments = []
 
