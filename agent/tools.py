@@ -68,9 +68,23 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
             date: Data no formato YYYY-MM-DD
             time: Horário no formato HH:MM (opcional)
         """
+        import re
         try:
             if time:
-                start_dt = datetime.fromisoformat(f"{date}T{time}:00-03:00")
+                # Robust time cleaning (e.g., '10h' -> '10:00', '10:00:00' -> '10:00')
+                clean_time = re.sub(r'[^0-9:]', '', time)
+                if len(clean_time) == 1 or len(clean_time) == 2:
+                    clean_time = f"{clean_time.zfill(2)}:00"
+                elif len(clean_time) >= 5 and clean_time.count(':') >= 1:
+                    clean_time = clean_time[:5]
+                elif len(clean_time) == 4 and ':' not in clean_time:
+                    clean_time = f"{clean_time[:2]}:{clean_time[2:]}"
+                
+                try:
+                    start_dt = datetime.fromisoformat(f"{date}T{clean_time}:00-03:00")
+                except ValueError:
+                    return f"[ERRO] Formato de data/hora inválido. Recebido date='{date}' e time='{time}'. Corrija e tente novamente."
+
                 start_utc = start_dt.astimezone(timezone.utc)
                 end_utc = start_utc + timedelta(hours=1)
 
@@ -116,7 +130,7 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
                 return f"Horários ocupados em {date}:\n" + "\n".join(busy_times)
 
         except Exception as e:
-            return f"Erro ao verificar disponibilidade: {e}"
+            return f"[ERRO INFERNO] Houve uma falha catastrófica ao verificar disponibilidade: {e}. VOCÊ DEVE INFORMAR AO CLIENTE QUE OCORREU UM ERRO E NÃO FOI POSSÍVEL VERIFICAR."
 
     @tool
     def schedule_appointment(date: str, time: str, purpose: str = "Agendamento via WhatsApp") -> str:
@@ -129,8 +143,22 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
             time: Horário no formato HH:MM
             purpose: Descrição do motivo do agendamento
         """
+        import re
         try:
-            start_dt = datetime.fromisoformat(f"{date}T{time}:00-03:00")
+            # Robust time cleaning
+            clean_time = re.sub(r'[^0-9:]', '', time)
+            if len(clean_time) == 1 or len(clean_time) == 2:
+                clean_time = f"{clean_time.zfill(2)}:00"
+            elif len(clean_time) >= 5 and clean_time.count(':') >= 1:
+                clean_time = clean_time[:5]
+            elif len(clean_time) == 4 and ':' not in clean_time:
+                clean_time = f"{clean_time[:2]}:{clean_time[2:]}"
+
+            try:
+                start_dt = datetime.fromisoformat(f"{date}T{clean_time}:00-03:00")
+            except ValueError:
+                return f"[ERRO CRÍTICO] Falha. O formato de hora '{time}' ou data '{date}' é inválido. O agendamento NÃO foi criado. VOCÊ DEVE INFORMAR O CLIENTE QUE FOI IMPOSSÍVEL AGENDAR."
+
             start_utc = start_dt.astimezone(timezone.utc)
             end_utc = start_utc + timedelta(hours=1)
 
@@ -147,10 +175,10 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
                 .execute()
             )
 
-            return f"✅ Agendamento criado com sucesso: {purpose} em {date} às {time}."
+            return f"✅ Agendamento criado com sucesso: {purpose} em {date} às {clean_time}."
 
         except Exception as e:
-            return f"Erro ao criar agendamento: {e}"
+            return f"[ERRO CRÍTICO ABSOLUTO] O agendamento FALHOU e NÃO FOI SALVO no banco de dados. Motivo: {e}. VOCÊ ESTÁ PROIBIDO DE DIZER QUE FOI CONFIRMADO. INFORME AO CLIENTE QUE OCORREU UM ERRO TÉCNICO E NÃO FOI POSSÍVEL AGENDAR."
 
     @tool
     def get_lead_info() -> str:
