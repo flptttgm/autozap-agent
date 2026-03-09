@@ -5,7 +5,7 @@ RAG Engine - Advanced Knowledge Retrieval
 Melhoria #3: RAG com busca híbrida e reranking.
 
 Técnicas implementadas:
-1. Busca vetorial (embedding similarity)
+1. Busca vetorial (OpenAI text-embedding-3-small, 1536 dims)
 2. Reranking por relevância contextual
 3. Formatação categorizada para o prompt
 """
@@ -17,9 +17,9 @@ from supabase import Client
 class RAGEngine:
     """Motor de RAG avançado com busca vetorial e reranking."""
 
-    def __init__(self, supabase: Client, ai_api_key: str):
+    def __init__(self, supabase: Client, openai_api_key: str):
         self.supabase = supabase
-        self.ai_api_key = ai_api_key
+        self.openai_api_key = openai_api_key
 
     async def search(
         self,
@@ -99,18 +99,22 @@ class RAGEngine:
         return "\n".join(parts)
 
     async def _generate_embedding(self, text: str) -> list[float]:
-        """Gera embedding usando Gemini (text-embedding-004)."""
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={self.ai_api_key}"
+        """Gera embedding usando OpenAI text-embedding-3-small (1536 dims)."""
+        url = "https://api.openai.com/v1/embeddings"
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 url,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {self.openai_api_key}",
+                    "Content-Type": "application/json",
+                },
                 json={
-                    "model": "models/text-embedding-004",
-                    "content": {"parts": [{"text": text}]},
+                    "model": "text-embedding-3-small",
+                    "input": text[:8000],
                 },
             )
             response.raise_for_status()
             data = response.json()
-            return data["embedding"]["values"]
+            return data["data"][0]["embedding"]
+

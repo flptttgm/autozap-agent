@@ -51,7 +51,10 @@ class AutozapAgent:
         )
 
         self.memory_manager = MemoryManager(self.supabase)
-        self.rag_engine = RAGEngine(self.supabase, resolved_key)
+
+        # OpenAI key for embeddings (RAG) — separate from Gemini LLM key
+        openai_key = os.environ.get("OPENAI_API_KEY", resolved_key)
+        self.rag_engine = RAGEngine(self.supabase, openai_key)
 
     async def process(
         self,
