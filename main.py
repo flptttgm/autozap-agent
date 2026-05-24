@@ -50,6 +50,7 @@ class ProcessRequest(BaseModel):
     instance_id: str | None = None
     ai_api_key: str | None = None
     ai_model: str | None = None
+    knowledge_context: str | None = None
 
 
 class ProcessResponse(BaseModel):
@@ -107,6 +108,7 @@ async def process_message(req: ProcessRequest, request: Request):
             message=req.message,
             agent_config=req.agent_config,
             instance_id=req.instance_id,
+            edge_knowledge_context=req.knowledge_context,
         )
         ms = (time.time() - start) * 1000
         logger.info(f"lead={req.lead_id[:8]}... tools={result.get('tools_used',[])} {ms:.0f}ms")

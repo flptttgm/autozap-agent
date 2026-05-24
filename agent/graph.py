@@ -64,6 +64,7 @@ class AutozapAgent:
         agent_config: dict,
         instance_id: str | None = None,
         chat_id: str | None = None,
+        edge_knowledge_context: str | None = None,
     ) -> dict:
         """Processa uma mensagem e retorna a resposta do agente."""
 
@@ -78,11 +79,24 @@ class AutozapAgent:
             return {"response": None, "status": "ai_paused"}
 
         # 2. RAG - Buscar no knowledge base
-        knowledge_context = await self.rag_engine.search(
-            workspace_id=workspace_id,
-            query=message,
-            agent_id=agent_config.get("id"),
-        )
+        knowledge_context = ""
+        try:
+            knowledge_context = await self.rag_engine.search(
+                workspace_id=workspace_id,
+                query=message,
+                agent_id=agent_config.get("id"),
+            )
+        except Exception as e:
+            print(f"[Agent] RAG search failed (non-blocking): {e}")
+
+        # Use edge context as fallback if Python RAG returned nothing
+        if not knowledge_context and edge_knowledge_context:
+            print(f"[Agent] 📚 Using Edge Function KB context as fallback ({len(edge_knowledge_context)} chars)")
+            knowledge_context = edge_knowledge_context
+        elif knowledge_context:
+            print(f"[Agent] 📚 Using Python RAG context ({len(knowledge_context)} chars)")
+        else:
+            print("[Agent] ⚠️ No knowledge context available from either source")
 
         # 3. CONSTRUIR PROMPT DINÂMICO
         lead_name = None
