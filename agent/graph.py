@@ -44,7 +44,7 @@ class AutozapAgent:
 
         # LLM leve para tarefas internas (resumos, extração)
         self.llm_lite = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",
+            model="gemini-3.1-flash-lite",
             google_api_key=resolved_key,
             temperature=0.1,
             max_output_tokens=300,
@@ -149,6 +149,7 @@ class AutozapAgent:
         chat_history = self.memory_manager.get_chat_messages(memory, limit=20)
 
         # 6. EXECUTAR AGENTE
+        result = None
         try:
             result = await executor.ainvoke({
                 "input": message,
