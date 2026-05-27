@@ -497,6 +497,90 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
             return f"Erro ao criar orçamento: {e}"
 
     @tool
+    def request_price_change(reason: str, suggested_value: float = 0) -> str:
+        """Solicita revisão de preço de um orçamento existente à equipe.
+        Use SEMPRE que o cliente disser que não tem dinheiro, achar caro,
+        pedir desconto, redução de preço ou negociar o valor.
+        NUNCA crie um novo orçamento para reduzir preço. Use ESTA ferramenta.
+        Após usar, informe ao cliente que você vai solicitar uma revisão com a equipe
+        e peça para ele aguardar.
+
+        Args:
+            reason: Motivo do cliente (ex: "achou caro", "não tem dinheiro", "pediu desconto")
+            suggested_value: Valor sugerido pelo cliente em reais, se mencionou algum (0 se não mencionou)
+        """
+        try:
+            # Buscar o orçamento mais recente do lead (tabela quotes)
+            quote_result = (
+                supabase.table("quotes")
+                .select("id, estimated_value, status")
+                .eq("workspace_id", workspace_id)
+                .eq("lead_id", lead_id)
+                .in_("status", ["pending", "negotiating"])
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+
+            if not quote_result.data:
+                # Fallback: buscar nos invoices
+                invoice_result = (
+                    supabase.table("invoices")
+                    .select("id, amount, status")
+                    .eq("workspace_id", workspace_id)
+                    .eq("lead_id", lead_id)
+                    .in_("status", ["pending", "sent"])
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                if not invoice_result.data:
+                    return (
+                        "Não encontrei nenhum orçamento ativo para este cliente. "
+                        "Informe ao cliente que não há orçamento para revisar no momento."
+                    )
+                # Se só tem invoice, registrar nota e informar
+                return (
+                    f"⚠️ Encontrei apenas cobranças, não orçamentos formais. "
+                    f"Registre como nota e informe ao cliente que vai consultar a equipe."
+                )
+
+            quote = quote_result.data[0]
+            original_value = quote.get("estimated_value", 0)
+
+            # Criar solicitação de alteração de preço
+            supabase.table("price_change_requests").insert({
+                "workspace_id": workspace_id,
+                "quote_id": quote["id"],
+                "lead_id": lead_id,
+                "original_value": original_value or 0,
+                "requested_value": suggested_value if suggested_value > 0 else None,
+                "customer_message": reason,
+                "status": "pending",
+            }).execute()
+
+            # Atualizar status do quote para 'negotiating'
+            supabase.table("quotes").update({
+                "status": "negotiating",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", quote["id"]).execute()
+
+            value_info = f" O cliente sugeriu R$ {suggested_value:.2f}." if suggested_value > 0 else ""
+
+            return (
+                f"✅ Solicitação de revisão de preço registrada com sucesso!\n"
+                f"Orçamento original: R$ {original_value:.2f}\n"
+                f"Motivo: {reason}\n"
+                f"{value_info}\n"
+                f"IMPORTANTE: Informe ao cliente que você vai SOLICITAR A REVISÃO DE PREÇO "
+                f"com a equipe e peça para ele AGUARDAR. NÃO prometa desconto. "
+                f"NÃO crie um novo orçamento."
+            )
+        except Exception as e:
+            return f"Erro ao solicitar revisão de preço: {e}"
+
+
+    @tool
     def query_products(search: str) -> str:
         """Busca no catálogo de produtos (preço, disponibilidade, descrição).
         Use quando o cliente perguntar sobre produtos, preços ou disponibilidade.
@@ -847,6 +931,7 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
         "schedule_appointment": schedule_appointment,
         "cancel_reschedule": cancel_reschedule,
         "send_quote": send_quote,
+        "request_price_change": request_price_change,
         "query_products": query_products,
         "check_conversation_history": check_conversation_history,
         "check_order_status": check_order_status,

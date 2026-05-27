@@ -197,6 +197,8 @@ def _get_tool_descriptions(enabled_tools: list[str]) -> str:
         "check_availability": "- check_availability: Verificar disponibilidade de horários",
         "schedule_appointment": "- schedule_appointment: Criar novo agendamento",
         "get_lead_info": "- get_lead_info: Buscar dados cadastrais do cliente",
+        "send_quote": "- send_quote: Criar um NOVO orçamento (apenas para primeiro orçamento, nunca para reduzir preço)",
+        "request_price_change": "- request_price_change: Solicitar revisão de preço de orçamento EXISTENTE quando o cliente achar caro, pedir desconto ou não ter dinheiro. NÃO crie novo orçamento para isso — use ESTA ferramenta",
     }
     return "\n".join(descs.get(t, f"- {t}") for t in enabled_tools)
 
