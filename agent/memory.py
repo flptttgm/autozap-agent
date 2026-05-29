@@ -71,7 +71,7 @@ class MemoryManager:
                 .select("content, direction, created_at")
                 .eq("lead_id", lead_id)
                 .gt("created_at", last_interaction)
-                .in_("direction", ["inbound", "outbound"])
+                .in_("direction", ["inbound", "outbound", "outbound_manual"])
                 .order("created_at", desc=False)
                 .limit(30)
                 .execute()
