@@ -463,10 +463,37 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
         except Exception as e:
             return f"Erro ao alterar agendamento: {e}"
 
+    def _recalc_deal_value() -> None:
+        """Recalcula e persiste o deal_value do lead a partir dos quotes ativos."""
+        try:
+            quotes_res = (
+                supabase.table("quotes")
+                .select("estimated_value")
+                .eq("lead_id", lead_id)
+                .in_("status", ["pending", "negotiating", "accepted"])
+                .execute()
+            )
+            total = sum(q.get("estimated_value", 0) or 0 for q in (quotes_res.data or []))
+            supabase.table("leads").update({
+                "deal_value": total,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", lead_id).execute()
+        except Exception as e:
+            print(f"[tools] Error recalculating deal_value: {e}")
+
+    def _get_lead_phone() -> str:
+        """Busca o telefone do lead para montar o chat_id."""
+        try:
+            res = supabase.table("leads").select("phone").eq("id", lead_id).single().execute()
+            return (res.data or {}).get("phone", "")
+        except Exception:
+            return ""
+
     @tool
     def send_quote(description: str, amount: float, due_days: int = 7) -> str:
-        """Gera e envia um orçamento com base nos serviços discutidos.
-        Use quando o cliente pedir um orçamento ou quando os serviços e valores forem acordados.
+        """Gera e salva um orçamento com base nos serviços discutidos.
+        Use quando o cliente pedir um orçamento ou quando os serviços e valores forem acordados na conversa.
+        O orçamento é criado automaticamente e fica visível na página de Orçamentos para o admin.
 
         Args:
             description: Descrição dos serviços/produtos incluídos no orçamento
@@ -474,27 +501,220 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
             due_days: Dias de validade do orçamento (padrão: 7)
         """
         try:
-            due_date = (datetime.now(timezone.utc) + timedelta(days=due_days)).strftime("%Y-%m-%d")
+            due_date = (datetime.now(timezone.utc) + timedelta(days=due_days)).isoformat()
+            phone = _get_lead_phone()
+            chat_id = f"{phone.replace('+', '')}@c.us" if phone else ""
 
-            result = supabase.table("invoices").insert({
+            result = supabase.table("quotes").insert({
                 "workspace_id": workspace_id,
                 "lead_id": lead_id,
-                "amount": amount,
-                "description": description,
-                "due_date": due_date,
+                "chat_id": chat_id,
                 "status": "pending",
+                "estimated_value": amount,
+                "ai_summary": description,
                 "source": "agent",
+                "valid_until": due_date,
             }).execute()
 
+            # Update lead score +10
+            try:
+                lead_res = supabase.table("leads").select("score").eq("id", lead_id).single().execute()
+                current_score = (lead_res.data or {}).get("score", 0) or 0
+                supabase.table("leads").update({
+                    "score": max(0, current_score + 10),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", lead_id).execute()
+            except Exception:
+                pass
+
+            # Recalculate deal_value
+            _recalc_deal_value()
+
+            formatted = f"R$ {amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             return (
                 f"✅ Orçamento criado com sucesso!\n"
                 f"Descrição: {description}\n"
-                f"Valor: R$ {amount:.2f}\n"
-                f"Válido até: {due_date}\n"
+                f"Valor: {formatted}\n"
                 f"O orçamento foi salvo e pode ser visualizado pelo administrador."
             )
         except Exception as e:
             return f"Erro ao criar orçamento: {e}"
+
+    @tool
+    def check_lead_quotes() -> str:
+        """Busca os orçamentos existentes do cliente atual.
+        Use para verificar se já existe orçamento antes de criar um novo,
+        ou quando o cliente perguntar sobre orçamentos anteriores.
+        """
+        try:
+            result = (
+                supabase.table("quotes")
+                .select("id, status, estimated_value, ai_summary, created_at, valid_until")
+                .eq("lead_id", lead_id)
+                .eq("workspace_id", workspace_id)
+                .order("created_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+
+            if not result.data:
+                return "O cliente não tem orçamentos."
+
+            status_labels = {
+                "pending": "⏳ Pendente",
+                "negotiating": "🔄 Em Negociação",
+                "accepted": "✅ Aceito",
+                "rejected": "❌ Rejeitado",
+                "completed": "🏁 Concluído",
+            }
+
+            lines = []
+            for q in result.data:
+                val = q.get("estimated_value") or 0
+                formatted_val = f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                status = status_labels.get(q["status"], q["status"])
+                desc = q.get("ai_summary", "Sem descrição") or "Sem descrição"
+                dt = q["created_at"][:10] if q.get("created_at") else "N/A"
+                lines.append(f"- {desc[:80]} | {formatted_val} | {status} | {dt}")
+
+            return f"Orçamentos do cliente ({len(result.data)}):\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Erro ao buscar orçamentos: {e}"
+
+    @tool
+    def manage_quote_status(new_status: str, reason: str = "") -> str:
+        """Atualiza o status do orçamento mais recente do cliente.
+        Use quando o cliente indicar na conversa que aceita, rejeita ou quer negociar o orçamento.
+        IMPORTANTE: Quando o cliente ACEITAR ("fechado", "aceito", "vamos em frente"),
+        marque como 'negotiating' para o admin confirmar a aprovação final.
+
+        Args:
+            new_status: Novo status — use 'negotiating' quando o cliente aceitar, 'rejected' se recusar
+            reason: Motivo da mudança (ex: "Cliente aceitou o valor proposto")
+        """
+        try:
+            valid_statuses = ["negotiating", "rejected"]
+            if new_status not in valid_statuses:
+                return f"Status inválido. Use um destes: {', '.join(valid_statuses)}. Para 'accepted' e 'completed', o admin deve confirmar manualmente."
+
+            # Get most recent active quote
+            result = (
+                supabase.table("quotes")
+                .select("id, status, estimated_value, ai_summary")
+                .eq("lead_id", lead_id)
+                .eq("workspace_id", workspace_id)
+                .in_("status", ["pending", "negotiating"])
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+
+            if not result.data:
+                return "Nenhum orçamento ativo encontrado para este cliente."
+
+            quote = result.data[0]
+            update_data = {
+                "status": new_status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+            supabase.table("quotes").update(update_data).eq("id", quote["id"]).execute()
+
+            # Update lead score
+            score_change = -5 if new_status == "rejected" else 0
+            if score_change != 0:
+                try:
+                    lead_res = supabase.table("leads").select("score").eq("id", lead_id).single().execute()
+                    current_score = (lead_res.data or {}).get("score", 0) or 0
+                    supabase.table("leads").update({
+                        "score": max(0, current_score + score_change),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", lead_id).execute()
+                except Exception:
+                    pass
+
+            # Recalculate deal_value
+            _recalc_deal_value()
+
+            status_labels = {
+                "negotiating": "Em Negociação (aguardando confirmação do admin)",
+                "rejected": "Rejeitado",
+            }
+            label = status_labels.get(new_status, new_status)
+            val = quote.get("estimated_value", 0) or 0
+            formatted_val = f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+            return (
+                f"✅ Orçamento atualizado para: {label}\n"
+                f"Valor: {formatted_val}\n"
+                f"Motivo: {reason or 'N/A'}\n"
+                f"O administrador foi notificado."
+            )
+        except Exception as e:
+            return f"Erro ao atualizar status do orçamento: {e}"
+
+    @tool
+    def request_price_change(customer_message: str, requested_value: float = 0) -> str:
+        """Cria uma solicitação de revisão de preço quando o cliente pede desconto.
+        Use quando o cliente disser que está caro, pedir desconto, ou sugerir um valor menor.
+        A solicitação fica pendente para o admin aprovar ou rejeitar.
+
+        Args:
+            customer_message: Mensagem/motivo do cliente para o pedido de desconto
+            requested_value: Valor sugerido pelo cliente em reais (0 se não especificou)
+        """
+        try:
+            # Get most recent active quote
+            result = (
+                supabase.table("quotes")
+                .select("id, estimated_value, status")
+                .eq("lead_id", lead_id)
+                .eq("workspace_id", workspace_id)
+                .in_("status", ["pending", "negotiating"])
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+
+            if not result.data:
+                return "Nenhum orçamento ativo encontrado para solicitar revisão de preço."
+
+            quote = result.data[0]
+            original_value = quote.get("estimated_value", 0) or 0
+
+            # Create price change request
+            supabase.table("price_change_requests").insert({
+                "workspace_id": workspace_id,
+                "quote_id": quote["id"],
+                "lead_id": lead_id,
+                "original_value": original_value,
+                "requested_value": requested_value if requested_value > 0 else None,
+                "customer_message": customer_message,
+                "status": "pending",
+            }).execute()
+
+            # Update quote to negotiating
+            supabase.table("quotes").update({
+                "status": "negotiating",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", quote["id"]).execute()
+
+            formatted_orig = f"R$ {original_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+            msg = (
+                f"✅ Solicitação de revisão de preço registrada!\n"
+                f"Valor original: {formatted_orig}\n"
+            )
+            if requested_value > 0:
+                formatted_req = f"R$ {requested_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                msg += f"Valor sugerido pelo cliente: {formatted_req}\n"
+            msg += (
+                f"Motivo: {customer_message}\n"
+                f"O administrador será notificado e decidirá sobre a revisão."
+            )
+            return msg
+        except Exception as e:
+            return f"Erro ao solicitar revisão de preço: {e}"
 
     @tool
     def query_products(search: str) -> str:
@@ -847,6 +1067,9 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
         "schedule_appointment": schedule_appointment,
         "cancel_reschedule": cancel_reschedule,
         "send_quote": send_quote,
+        "check_lead_quotes": check_lead_quotes,
+        "manage_quote_status": manage_quote_status,
+        "request_price_change": request_price_change,
         "query_products": query_products,
         "check_conversation_history": check_conversation_history,
         "check_order_status": check_order_status,
