@@ -85,6 +85,7 @@ class AutozapAgent:
                 workspace_id=workspace_id,
                 query=message,
                 agent_id=agent_config.get("id"),
+                llm=self.llm_lite,
             )
         except Exception as e:
             print(f"[Agent] RAG search failed (non-blocking): {e}")
