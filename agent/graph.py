@@ -125,7 +125,7 @@ class AutozapAgent:
 
         # 4. CRIAR FERRAMENTAS
         enabled_tools = agent_config.get("enabled_tools", None)
-        tools = create_tools(self.supabase, workspace_id, lead_id, enabled_tools=enabled_tools)
+        tools = create_tools(self.supabase, workspace_id, lead_id, instance_id=instance_id, enabled_tools=enabled_tools)
 
         # 5. MONTAR AGENTE COM LANGCHAIN
         prompt = ChatPromptTemplate.from_messages([

@@ -14,11 +14,12 @@ from supabase import Client
 import json
 
 
-def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tools: list[str] | None = None):
+def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id: str | None = None, enabled_tools: list[str] | None = None):
     """Cria ferramentas contextualizadas para o agente.
 
     Args:
         enabled_tools: Lista de nomes de ferramentas habilitadas. Se None, retorna todas.
+        instance_id: ID da instância WhatsApp (para associar agendamentos).
     """
 
     # ─────────────────────────────────────────────
@@ -371,14 +372,19 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
             start_utc = start_dt.astimezone(timezone.utc)
             end_utc = start_utc + timedelta(hours=1)
 
-            supabase.table("appointments").insert({
+            insert_data = {
                 "workspace_id": workspace_id,
                 "lead_id": lead_id,
                 "title": purpose,
                 "start_time": start_utc.isoformat(),
                 "end_time": end_utc.isoformat(),
                 "status": "scheduled",
-            }).execute()
+                "metadata": json.dumps({"source": "whatsapp_agent"}),
+            }
+            if instance_id:
+                insert_data["instance_id"] = instance_id
+
+            supabase.table("appointments").insert(insert_data).execute()
 
             return f"✅ Agendamento criado com sucesso: {purpose} em {date} às {clean_time}."
 
@@ -895,7 +901,7 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
 
             end_dt = start_dt + timedelta(minutes=30)
 
-            supabase.table("appointments").insert({
+            insert_data = {
                 "workspace_id": workspace_id,
                 "lead_id": lead_id,
                 "title": f"📌 Follow-up: {description}",
@@ -904,7 +910,11 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, enabled_tool
                 "end_time": end_dt.isoformat(),
                 "status": "scheduled",
                 "metadata": json.dumps({"type": "followup", "created_by": "agent"}),
-            }).execute()
+            }
+            if instance_id:
+                insert_data["instance_id"] = instance_id
+
+            supabase.table("appointments").insert(insert_data).execute()
 
             return (
                 f"✅ Follow-up agendado!\n"
