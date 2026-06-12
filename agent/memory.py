@@ -25,7 +25,7 @@ class MemoryManager:
         """Carrega todas as camadas de memória de um lead."""
         result = (
             self.supabase.table("chat_memory")
-            .select("id, conversation_history, conversation_summary, context_flags, lead_profile, last_interaction")
+            .select("id, conversation_history, conversation_summary, context_flags, lead_profile, last_interaction, active_agent_id")
             .eq("lead_id", lead_id)
             .eq("workspace_id", workspace_id)
             .maybe_single()
@@ -41,6 +41,7 @@ class MemoryManager:
                 "lead_profile": {},
                 "ai_paused": False,
                 "last_interaction": None,
+                "active_agent_id": None,
             }
 
         data = result.data
@@ -52,6 +53,7 @@ class MemoryManager:
             "lead_profile": data.get("lead_profile", {}),
             "ai_paused": data.get("context_flags", {}).get("ai_paused", False),
             "last_interaction": data.get("last_interaction"),
+            "active_agent_id": data.get("active_agent_id"),
         }
 
     async def sync_missed_messages(self, lead_id: str, memory: dict) -> dict:
