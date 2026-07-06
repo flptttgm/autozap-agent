@@ -25,7 +25,7 @@ class MemoryManager:
         """Carrega todas as camadas de memória de um lead."""
         result = (
             self.supabase.table("chat_memory")
-            .select("id, conversation_history, conversation_summary, context_flags, lead_profile, last_interaction, active_agent_id")
+            .select("id, conversation_history, conversation_summary, context_flags, lead_profile, last_interaction, active_agent_id, ai_paused")
             .eq("lead_id", lead_id)
             .eq("workspace_id", workspace_id)
             .maybe_single()
@@ -51,7 +51,9 @@ class MemoryManager:
             "summary": data.get("conversation_summary"),
             "context_flags": data.get("context_flags", {}),
             "lead_profile": data.get("lead_profile", {}),
-            "ai_paused": data.get("context_flags", {}).get("ai_paused", False),
+            # Read ai_paused from direct column first (set by frontend toggle),
+            # then fallback to context_flags for backward compatibility (set by agent tools)
+            "ai_paused": data.get("ai_paused") or data.get("context_flags", {}).get("ai_paused", False),
             "last_interaction": data.get("last_interaction"),
             "active_agent_id": data.get("active_agent_id"),
         }
