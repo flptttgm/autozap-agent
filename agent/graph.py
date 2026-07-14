@@ -29,7 +29,7 @@ class AutozapAgent:
 
         # AI keys: request > env var > error
         resolved_key = ai_api_key or os.environ.get("AI_API_KEY", "")
-        resolved_model = ai_model or os.environ.get("AI_MODEL", "gemini-2.0-flash")
+        resolved_model = ai_model or os.environ.get("AI_MODEL", "gemini-2.5-flash")
 
         if not resolved_key:
             raise ValueError("AI_API_KEY must be provided via request or environment variable")
@@ -44,7 +44,7 @@ class AutozapAgent:
 
         # LLM leve para tarefas internas (resumos, extração)
         self.llm_lite = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",
+            model="gemini-2.5-flash-lite",
             google_api_key=resolved_key,
             temperature=0.1,
             max_output_tokens=300,
@@ -85,6 +85,7 @@ class AutozapAgent:
                 workspace_id=workspace_id,
                 query=message,
                 agent_id=agent_config.get("id"),
+                llm=self.llm_lite,
             )
         except Exception as e:
             print(f"[Agent] RAG search failed (non-blocking): {e}")
