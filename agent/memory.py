@@ -32,7 +32,12 @@ class MemoryManager:
             .execute()
         )
 
-        if not result.data:
+        # NOTE: with supabase-py/postgrest, `.maybe_single().execute()` returns
+        # None (not a response with data=None) when there are 0 rows. Guarding
+        # only `result.data` raised `'NoneType' object has no attribute 'data'`,
+        # crashing every first-message conversation and forcing the Edge Function
+        # to fall back to the legacy engine (no tools).
+        if not result or not result.data:
             return {
                 "id": None,
                 "history": [],
