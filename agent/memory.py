@@ -25,14 +25,19 @@ class MemoryManager:
         """Carrega todas as camadas de memória de um lead."""
         result = (
             self.supabase.table("chat_memory")
-            .select("id, conversation_history, conversation_summary, context_flags, lead_profile, last_interaction")
+            .select("id, conversation_history, conversation_summary, context_flags, lead_profile, last_interaction, active_agent_id, ai_paused")
             .eq("lead_id", lead_id)
             .eq("workspace_id", workspace_id)
             .maybe_single()
             .execute()
         )
 
-        if not result.data:
+        # NOTE: with supabase-py/postgrest, `.maybe_single().execute()` returns
+        # None (not a response with data=None) when there are 0 rows. Guarding
+        # only `result.data` raised `'NoneType' object has no attribute 'data'`,
+        # crashing every first-message conversation and forcing the Edge Function
+        # to fall back to the legacy engine (no tools).
+        if not result or not result.data:
             return {
                 "id": None,
                 "history": [],
@@ -41,6 +46,7 @@ class MemoryManager:
                 "lead_profile": {},
                 "ai_paused": False,
                 "last_interaction": None,
+                "active_agent_id": None,
             }
 
         data = result.data
@@ -50,8 +56,11 @@ class MemoryManager:
             "summary": data.get("conversation_summary"),
             "context_flags": data.get("context_flags", {}),
             "lead_profile": data.get("lead_profile", {}),
-            "ai_paused": data.get("context_flags", {}).get("ai_paused", False),
+            # Read ai_paused from direct column first (set by frontend toggle),
+            # then fallback to context_flags for backward compatibility (set by agent tools)
+            "ai_paused": data.get("ai_paused") or data.get("context_flags", {}).get("ai_paused", False),
             "last_interaction": data.get("last_interaction"),
+            "active_agent_id": data.get("active_agent_id"),
         }
 
     async def sync_missed_messages(self, lead_id: str, memory: dict) -> dict:
@@ -71,7 +80,7 @@ class MemoryManager:
                 .select("content, direction, created_at")
                 .eq("lead_id", lead_id)
                 .gt("created_at", last_interaction)
-                .in_("direction", ["inbound", "outbound"])
+                .in_("direction", ["inbound", "outbound", "outbound_manual"])
                 .order("created_at", desc=False)
                 .limit(30)
                 .execute()
