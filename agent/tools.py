@@ -230,6 +230,130 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
     # OPTIONAL TOOLS (toggleable per agent)
     # ─────────────────────────────────────────────
 
+    # ── Professionals helpers (multi-professional agenda) ──
+    WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    WEEKDAY_LABELS = {
+        "mon": "seg", "tue": "ter", "wed": "qua", "thu": "qui",
+        "fri": "sex", "sat": "sáb", "sun": "dom",
+    }
+
+    def _get_professionals() -> list[dict]:
+        """Bookable professionals of the workspace ([] = single shared agenda)."""
+        try:
+            result = supabase.rpc(
+                "get_bookable_professionals", {"p_workspace_id": workspace_id}
+            ).execute()
+            return result.data or []
+        except Exception:
+            return []
+
+    def _format_professionals(professionals: list[dict]) -> str:
+        lines = []
+        for p in professionals:
+            wh = p.get("working_hours") or {}
+            days = [WEEKDAY_LABELS[k] for k in WEEKDAY_KEYS if wh.get(k)]
+            parts = [p.get("name", "Profissional")]
+            if p.get("specialty"):
+                parts.append(f"({p['specialty']})")
+            if days:
+                parts.append(f"— atende: {', '.join(days)}")
+            lines.append(f"- {' '.join(parts)}")
+        return "\n".join(lines)
+
+    def _resolve_professional(name: str, professionals: list[dict]):
+        """Match a professional by (partial) name or specialty.
+
+        Returns (professional, error_message). Exactly one of them is set,
+        except when there are no professionals at all (both None = legacy mode).
+        """
+        if not professionals:
+            return None, None
+        if not name:
+            if len(professionals) == 1:
+                return professionals[0], None
+            return None, (
+                "Há mais de um profissional disponível. Pergunte ao cliente com quem "
+                "ele quer agendar. Profissionais:\n" + _format_professionals(professionals)
+            )
+
+        n = name.lower().strip()
+        matches = [
+            p for p in professionals
+            if n in (p.get("name") or "").lower() or n in (p.get("specialty") or "").lower()
+        ]
+        if not matches:
+            # Token-level match (e.g. "dra ana" vs "Ana Souza")
+            for p in professionals:
+                tokens = (p.get("name") or "").lower().split()
+                query_tokens = [t for t in n.split() if len(t) > 2]
+                if any(qt in tokens or any(t.startswith(qt) for t in tokens) for qt in query_tokens):
+                    matches.append(p)
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            return None, (
+                f"Mais de um profissional corresponde a '{name}'. Peça ao cliente para "
+                "especificar. Opções:\n" + _format_professionals(matches)
+            )
+        return None, (
+            f"Não encontrei o profissional '{name}'. Profissionais disponíveis:\n"
+            + _format_professionals(professionals)
+        )
+
+    def _working_windows(professional: dict | None, date: str):
+        """UTC (start, end) windows the professional attends on this date.
+
+        Returns None when there is no configured schedule (fall back to the
+        default 08-18 window); [] when the professional does not attend that day.
+        """
+        if not professional:
+            return None
+        wh = professional.get("working_hours") or {}
+        if not wh:
+            return None
+        key = WEEKDAY_KEYS[datetime.fromisoformat(date).weekday()]
+        windows = []
+        for w in wh.get(key) or []:
+            try:
+                s = datetime.fromisoformat(f"{date}T{w['start']}:00-03:00").astimezone(timezone.utc)
+                e = datetime.fromisoformat(f"{date}T{w['end']}:00-03:00").astimezone(timezone.utc)
+                if e > s:
+                    windows.append((s, e))
+            except (KeyError, ValueError):
+                continue
+        return windows
+
+    def _appointment_conflicts(start_utc, end_utc, professional: dict | None) -> bool:
+        query = (
+            supabase.table("appointments")
+            .select("id")
+            .eq("workspace_id", workspace_id)
+            .neq("status", "cancelled")
+            .lt("start_time", end_utc.isoformat())
+            .gt("end_time", start_utc.isoformat())
+            .limit(1)
+        )
+        if professional:
+            query = query.eq("professional_member_id", professional["member_id"])
+        return bool(query.execute().data)
+
+    @tool
+    def list_professionals() -> str:
+        """Lista os profissionais disponíveis para agendamento (nome, especialidade, dias de atendimento).
+        Use quando o cliente quiser agendar e você precisar oferecer as opções de profissionais,
+        ou quando ele perguntar quem atende na clínica/empresa.
+        """
+        try:
+            professionals = _get_professionals()
+            if not professionals:
+                return "Não há profissionais cadastrados — a agenda é única (geral)."
+            return (
+                f"Profissionais disponíveis ({len(professionals)}):\n"
+                + _format_professionals(professionals)
+            )
+        except Exception as e:
+            return f"Erro ao listar profissionais: {e}"
+
     @tool
     def check_appointments(query: str = "") -> str:
         """Consulta os agendamentos existentes do cliente.
@@ -270,16 +394,39 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
             return f"Erro ao consultar agendamentos: {e}"
 
     @tool
-    def check_availability(date: str, time: str = "") -> str:
+    def check_availability(date: str, time: str = "", professional: str = "") -> str:
         """Verifica se um horário está disponível para agendamento.
         Use quando o cliente quiser marcar algo ou perguntar se tem vaga.
+        Se houver profissionais cadastrados, informe com QUEM o cliente quer agendar
+        (use list_professionals para ver as opções).
 
         Args:
             date: Data no formato YYYY-MM-DD
             time: Horário no formato HH:MM (opcional)
+            professional: Nome do profissional desejado (obrigatório quando há mais de um)
         """
         import re
         try:
+            professionals = _get_professionals()
+            prof, err = _resolve_professional(professional, professionals)
+            if err:
+                return err
+
+            duration = int(prof["appointment_duration_minutes"]) if prof else 60
+            windows = _working_windows(prof, date)
+            prof_label = f" com {prof['name']}" if prof else ""
+
+            if windows is not None and not windows:
+                days = [
+                    WEEKDAY_LABELS[k]
+                    for k in WEEKDAY_KEYS
+                    if (prof.get("working_hours") or {}).get(k)
+                ]
+                days_txt = ", ".join(days) if days else "nenhum dia configurado"
+                return (
+                    f"{prof['name']} não atende em {date}. Dias de atendimento: {days_txt}."
+                )
+
             if time:
                 # Robust time cleaning (e.g., '10h' -> '10:00', '10:00:00' -> '10:00')
                 clean_time = re.sub(r'[^0-9:]', '', time)
@@ -296,65 +443,97 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
                     return f"[ERRO] Formato de data/hora inválido. Recebido date='{date}' e time='{time}'. Corrija e tente novamente."
 
                 start_utc = start_dt.astimezone(timezone.utc)
-                end_utc = start_utc + timedelta(hours=1)
+                end_utc = start_utc + timedelta(minutes=duration)
 
-                result = (
-                    supabase.table("appointments")
-                    .select("id")
-                    .eq("workspace_id", workspace_id)
-                    .neq("status", "cancelled")
-                    .lte("start_time", end_utc.isoformat())
-                    .gte("end_time", start_utc.isoformat())
-                    .limit(1)
-                    .execute()
+                if windows is not None and not any(
+                    s <= start_utc and end_utc <= e for s, e in windows
+                ):
+                    hours_txt = ", ".join(
+                        f"{(s + timedelta(hours=-3)).strftime('%H:%M')}–{(e + timedelta(hours=-3)).strftime('%H:%M')}"
+                        for s, e in windows
+                    )
+                    return (
+                        f"{date} às {clean_time} está FORA do horário de atendimento"
+                        f"{prof_label}. Horários nesse dia: {hours_txt}."
+                    )
+
+                if _appointment_conflicts(start_utc, end_utc, prof):
+                    return f"O horário {date} às {clean_time}{prof_label} já está OCUPADO."
+                return f"O horário {date} às {clean_time}{prof_label} está DISPONÍVEL! ✅"
+
+            # No specific time: list free slots (or busy times in legacy mode)
+            if windows is None:
+                windows = [(
+                    datetime.fromisoformat(f"{date}T08:00:00-03:00").astimezone(timezone.utc),
+                    datetime.fromisoformat(f"{date}T18:00:00-03:00").astimezone(timezone.utc),
+                )]
+
+            day_start = min(w[0] for w in windows)
+            day_end = max(w[1] for w in windows)
+
+            busy_query = (
+                supabase.table("appointments")
+                .select("start_time, end_time")
+                .eq("workspace_id", workspace_id)
+                .neq("status", "cancelled")
+                .lt("start_time", day_end.isoformat())
+                .gt("end_time", day_start.isoformat())
+                .order("start_time", desc=False)
+            )
+            if prof:
+                busy_query = busy_query.eq("professional_member_id", prof["member_id"])
+            busy = [
+                (
+                    datetime.fromisoformat(a["start_time"].replace("Z", "+00:00")),
+                    datetime.fromisoformat(a["end_time"].replace("Z", "+00:00")),
                 )
+                for a in (busy_query.execute().data or [])
+            ]
 
-                if result.data:
-                    return f"O horário {date} às {time} já está OCUPADO."
-                return f"O horário {date} às {time} está DISPONÍVEL! ✅"
-            else:
-                # Verifica todos os horários do dia
-                day_start = datetime.fromisoformat(f"{date}T08:00:00-03:00").astimezone(timezone.utc)
-                day_end = datetime.fromisoformat(f"{date}T18:00:00-03:00").astimezone(timezone.utc)
+            free_slots = []
+            for w_start, w_end in windows:
+                cursor = w_start
+                while cursor + timedelta(minutes=duration) <= w_end:
+                    slot_end = cursor + timedelta(minutes=duration)
+                    if not any(bs < slot_end and be > cursor for bs, be in busy):
+                        free_slots.append((cursor + timedelta(hours=-3)).strftime("%H:%M"))
+                    cursor = slot_end
 
-                result = (
-                    supabase.table("appointments")
-                    .select("start_time, end_time")
-                    .eq("workspace_id", workspace_id)
-                    .neq("status", "cancelled")
-                    .gte("start_time", day_start.isoformat())
-                    .lte("start_time", day_end.isoformat())
-                    .order("start_time", desc=False)
-                    .execute()
-                )
-
-                if not result.data:
-                    return f"O dia {date} está completamente livre!"
-
-                busy_times = []
-                for a in result.data:
-                    s = datetime.fromisoformat(a["start_time"].replace("Z", "+00:00")) - timedelta(hours=3)
-                    e = datetime.fromisoformat(a["end_time"].replace("Z", "+00:00")) - timedelta(hours=3)
-                    busy_times.append(f"- {s.strftime('%H:%M')} a {e.strftime('%H:%M')}")
-
-                return f"Horários ocupados em {date}:\n" + "\n".join(busy_times)
+            if not free_slots:
+                return f"Não há horários livres em {date}{prof_label}."
+            shown = free_slots[:12]
+            more = f" (e mais {len(free_slots) - 12})" if len(free_slots) > 12 else ""
+            return (
+                f"Horários DISPONÍVEIS em {date}{prof_label} "
+                f"(duração {duration}min): {', '.join(shown)}{more}"
+            )
 
         except Exception as e:
             return f"[ERRO] Falha ao verificar disponibilidade: {e}. INFORME AO CLIENTE QUE OCORREU UM ERRO."
 
     @tool
-    def schedule_appointment(date: str, time: str, purpose: str = "Agendamento via WhatsApp") -> str:
+    def schedule_appointment(date: str, time: str, purpose: str = "Agendamento via WhatsApp", professional: str = "") -> str:
         """Cria um novo agendamento para o cliente.
         Use SOMENTE após confirmar com o cliente que ele deseja marcar.
         SEMPRE verifique disponibilidade antes de agendar.
+        Se houver profissionais cadastrados, o agendamento DEVE ser com um profissional
+        específico — pergunte ao cliente com quem ele quer marcar.
 
         Args:
             date: Data no formato YYYY-MM-DD
             time: Horário no formato HH:MM
             purpose: Descrição do motivo do agendamento
+            professional: Nome do profissional com quem agendar (obrigatório quando há mais de um)
         """
         import re
         try:
+            professionals = _get_professionals()
+            prof, err = _resolve_professional(professional, professionals)
+            if err:
+                return f"{err}\nO agendamento NÃO foi criado."
+
+            duration = int(prof["appointment_duration_minutes"]) if prof else 60
+
             # Robust time cleaning
             clean_time = re.sub(r'[^0-9:]', '', time)
             if len(clean_time) == 1 or len(clean_time) == 2:
@@ -370,23 +549,56 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
                 return f"[ERRO CRÍTICO] O formato de hora '{time}' ou data '{date}' é inválido. O agendamento NÃO foi criado."
 
             start_utc = start_dt.astimezone(timezone.utc)
-            end_utc = start_utc + timedelta(hours=1)
+            end_utc = start_utc + timedelta(minutes=duration)
+
+            windows = _working_windows(prof, date)
+            if windows is not None:
+                if not windows:
+                    return (
+                        f"{prof['name']} não atende em {date}. O agendamento NÃO foi criado. "
+                        f"Use check_availability para achar outro dia."
+                    )
+                if not any(s <= start_utc and end_utc <= e for s, e in windows):
+                    hours_txt = ", ".join(
+                        f"{(s + timedelta(hours=-3)).strftime('%H:%M')}–{(e + timedelta(hours=-3)).strftime('%H:%M')}"
+                        for s, e in windows
+                    )
+                    return (
+                        f"{date} às {clean_time} está fora do horário de {prof['name']} "
+                        f"({hours_txt}). O agendamento NÃO foi criado."
+                    )
+
+            if _appointment_conflicts(start_utc, end_utc, prof):
+                who = f" com {prof['name']}" if prof else ""
+                return (
+                    f"O horário {date} às {clean_time}{who} já está OCUPADO. "
+                    f"O agendamento NÃO foi criado. Ofereça outro horário."
+                )
+
+            metadata = {"source": "whatsapp_agent"}
+            title = purpose
+            if prof:
+                metadata["professional_name"] = prof["name"]
+                title = f"{purpose} — {prof['name']}"
 
             insert_data = {
                 "workspace_id": workspace_id,
                 "lead_id": lead_id,
-                "title": purpose,
+                "title": title,
                 "start_time": start_utc.isoformat(),
                 "end_time": end_utc.isoformat(),
                 "status": "scheduled",
-                "metadata": json.dumps({"source": "whatsapp_agent"}),
+                "metadata": json.dumps(metadata),
             }
             if instance_id:
                 insert_data["instance_id"] = instance_id
+            if prof:
+                insert_data["professional_member_id"] = prof["member_id"]
 
             supabase.table("appointments").insert(insert_data).execute()
 
-            return f"✅ Agendamento criado com sucesso: {purpose} em {date} às {clean_time}."
+            who = f" com {prof['name']}" if prof else ""
+            return f"✅ Agendamento criado com sucesso: {purpose}{who} em {date} às {clean_time}."
 
         except Exception as e:
             return f"[ERRO CRÍTICO] O agendamento FALHOU. Motivo: {e}. NÃO DIGA QUE FOI CONFIRMADO."
@@ -936,6 +1148,7 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
         "search_knowledge_base": search_knowledge_base,
         "register_note": register_note,
         # Optional (toggleable)
+        "list_professionals": list_professionals,
         "check_appointments": check_appointments,
         "check_availability": check_availability,
         "schedule_appointment": schedule_appointment,
@@ -952,5 +1165,11 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
     }
 
     if enabled_tools:
-        return [all_tools[name] for name in enabled_tools if name in all_tools]
+        names = list(enabled_tools)
+        # Scheduling requires knowing who the professionals are — always pair them.
+        if "list_professionals" not in names and any(
+            n in names for n in ("check_availability", "schedule_appointment", "check_appointments")
+        ):
+            names.append("list_professionals")
+        return [all_tools[name] for name in names if name in all_tools]
     return list(all_tools.values())

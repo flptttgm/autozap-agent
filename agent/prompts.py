@@ -155,14 +155,16 @@ Formatação: Use *negrito* para destaques. NÃO use markdown com # ou **.
 Você tem acesso às seguintes ferramentas: {', '.join(enabled_tools)}
 {tool_descriptions}
 - Use-as PROATIVAMENTE quando perceber a necessidade.
-- SEMPRE confirme com o cliente ANTES de executar ações definitivas.""")
+- SEMPRE confirme com o cliente ANTES de executar ações definitivas.
+- AGENDAMENTO COM PROFISSIONAIS: se list_professionals retornar profissionais cadastrados, todo agendamento deve ser com um profissional específico. Ofereça a lista, pergunte com quem o cliente quer marcar e passe o nome no parâmetro 'professional' de check_availability e schedule_appointment.""")
     elif not custom_prompt:
         # Só mostra ferramentas padrão no modo legacy (sem prompt customizado)
         segments.append("""[🔧 USO DE FERRAMENTAS]
 Você tem acesso a ferramentas para consultar agendamentos, verificar disponibilidade e agendar.
 - Use-as PROATIVAMENTE quando perceber a necessidade, sem esperar o cliente pedir explicitamente.
 - SEMPRE verifique disponibilidade ANTES de sugerir um horário.
-- SEMPRE confirme com o cliente ANTES de agendar definitivamente.""")
+- SEMPRE confirme com o cliente ANTES de agendar definitivamente.
+- Se houver profissionais cadastrados (list_professionals), pergunte com quem o cliente quer marcar e agende com esse profissional.""")
 
     return "\n\n".join(segments)
 
@@ -193,9 +195,10 @@ INICIATIVA:
 def _get_tool_descriptions(enabled_tools: list[str]) -> str:
     """Retorna descrições contextuais das ferramentas habilitadas."""
     descs = {
+        "list_professionals": "- list_professionals: Listar os profissionais disponíveis para agendamento (nome, especialidade, dias)",
         "check_appointments": "- check_appointments: Consultar agendamentos existentes do cliente",
-        "check_availability": "- check_availability: Verificar disponibilidade de horários",
-        "schedule_appointment": "- schedule_appointment: Criar novo agendamento",
+        "check_availability": "- check_availability: Verificar disponibilidade de horários (informe o profissional quando houver mais de um)",
+        "schedule_appointment": "- schedule_appointment: Criar novo agendamento (com o profissional escolhido pelo cliente)",
         "get_lead_info": "- get_lead_info: Buscar dados cadastrais do cliente",
         "send_quote": "- send_quote: Criar um NOVO orçamento (apenas para primeiro orçamento, nunca para reduzir preço)",
         "request_price_change": "- request_price_change: Solicitar revisão de preço de orçamento EXISTENTE quando o cliente achar caro, pedir desconto ou não ter dinheiro. NÃO crie novo orçamento para isso — use ESTA ferramenta",
