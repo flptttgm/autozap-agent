@@ -12,6 +12,8 @@ from datetime import datetime, timezone, timedelta
 from langchain_core.tools import tool
 from supabase import Client
 import json
+import os
+import httpx
 
 
 def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id: str | None = None, enabled_tools: list[str] | None = None):
@@ -1030,17 +1032,19 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
 
     @tool
     def check_order_status(order_reference: str = "") -> str:
-        """Consulta status de pedidos para e-commerce/delivery.
-        Use quando o cliente perguntar sobre status de pedido, entrega ou envio.
+        """Consulta status de pedidos/cobranças para e-commerce/delivery.
+        Use quando o cliente perguntar sobre status de pedido, pagamento, entrega ou envio.
 
         Args:
             order_reference: Número ou referência do pedido (opcional)
         """
         try:
-            # Check in invoices as order proxy
             builder = (
                 supabase.table("invoices")
-                .select("id, description, amount, status, due_date, created_at, paid_at")
+                .select(
+                    "id, description, amount, status, due_date, created_at, paid_at, "
+                    "payment_url, pix_code, provider, payment_method"
+                )
                 .eq("workspace_id", workspace_id)
                 .eq("lead_id", lead_id)
                 .order("created_at", desc=True)
@@ -1050,39 +1054,99 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
             result = builder.execute()
 
             if not result.data:
-                return "Nenhum pedido/orçamento encontrado para este cliente."
+                return "Nenhum pedido/cobrança encontrado para este cliente."
 
             orders = []
             status_map = {
-                "pending": "⏳ Pendente",
-                "sent": "📤 Enviado",
-                "paid": "✅ Pago",
+                "pending": "⏳ Pendente de pagamento",
+                "sent": "📤 Cobrança enviada — aguardando pagamento",
+                "paid": "✅ Pago / confirmado",
                 "overdue": "⚠️ Vencido",
                 "canceled": "❌ Cancelado",
+                "refunded": "↩️ Estornado",
             }
 
             for o in result.data:
+                if order_reference and order_reference.lower() not in (
+                    (o.get("description") or "").lower() + o.get("id", "")
+                ):
+                    continue
                 dt = datetime.fromisoformat(o["created_at"].replace("Z", "+00:00")) - timedelta(hours=3)
                 status_label = status_map.get(o["status"], o["status"])
-                orders.append(
-                    f"- {o['description'] or 'Sem descrição'} | R$ {o['amount']:.2f} | {status_label} | {dt.strftime('%d/%m/%Y')}"
+                line = (
+                    f"- {o['description'] or 'Sem descrição'} | R$ {o['amount']:.2f} | "
+                    f"{status_label} | {dt.strftime('%d/%m/%Y')}"
                 )
+                if o.get("payment_url") and o["status"] in ("pending", "sent", "overdue"):
+                    line += f"\n  Link: {o['payment_url']}"
+                if o.get("paid_at") and o["status"] == "paid":
+                    line += "\n  Informe ao cliente que o pagamento já foi confirmado."
+                orders.append(line)
 
-            return f"Pedidos/Orçamentos do cliente:\n" + "\n".join(orders)
+            if not orders:
+                return "Nenhuma cobrança correspondente à referência informada."
+
+            return "Pedidos/Cobranças do cliente:\n" + "\n".join(orders)
         except Exception as e:
             return f"Erro ao consultar pedidos: {e}"
 
     @tool
     def send_payment_link(amount: float, description: str = "Pagamento") -> str:
-        """Gera um link de pagamento (PIX, Stripe, etc.).
+        """Gera cobrança real com link/PIX (gateway do workspace ou PIX estático).
         Use quando o cliente quiser pagar ou quando um orçamento for aprovado.
+        Envie o link ou código PIX retornado na resposta ao cliente.
 
         Args:
             amount: Valor em reais
             description: Descrição do pagamento
         """
         try:
-            # Check if PIX is configured
+            supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+            service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+            due_date = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%d")
+
+            if supabase_url and service_key:
+                with httpx.Client(timeout=45.0) as client:
+                    resp = client.post(
+                        f"{supabase_url}/functions/v1/tenant-payments",
+                        headers={
+                            "Authorization": f"Bearer {service_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "action": "create_charge",
+                            "workspace_id": workspace_id,
+                            "lead_id": lead_id,
+                            "amount": float(amount),
+                            "description": description,
+                            "due_date": due_date,
+                            "payment_method": "pix",
+                            "source": "agent",
+                            "send_now": True,
+                        },
+                    )
+                    data = resp.json() if resp.content else {}
+                    if resp.is_success and data.get("invoice"):
+                        inv = data["invoice"]
+                        parts = [
+                            "✅ Cobrança criada e enviada!",
+                            f"Valor: R$ {float(amount):.2f}",
+                            f"Provedor: {data.get('provider') or inv.get('provider') or 'pix'}",
+                        ]
+                        if inv.get("payment_url"):
+                            parts.append(f"Link de pagamento: {inv['payment_url']}")
+                            parts.append("Envie este link ao cliente para ele pagar.")
+                        if inv.get("pix_code"):
+                            parts.append(f"PIX Copia e Cola: {inv['pix_code']}")
+                            parts.append("Envie o código PIX ao cliente.")
+                        if not inv.get("payment_url") and not inv.get("pix_code"):
+                            parts.append("Cobrança registrada; confirme o envio no WhatsApp.")
+                        return "\n".join(parts)
+                    err = data.get("error") or resp.text
+                    # fall through to static PIX below
+                    print(f"[send_payment_link] tenant-payments failed: {err}")
+
+            # Fallback: static PIX key (legacy)
             pix_config = (
                 supabase.table("pix_config")
                 .select("pix_key, pix_key_type, receiver_name, receiver_city, is_active")
@@ -1094,16 +1158,17 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
 
             if pix_config.data:
                 config = pix_config.data[0]
-                # Create invoice with PIX info
-                invoice = supabase.table("invoices").insert({
+                supabase.table("invoices").insert({
                     "workspace_id": workspace_id,
                     "lead_id": lead_id,
                     "amount": amount,
                     "description": description,
-                    "due_date": (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%d"),
+                    "due_date": due_date,
                     "status": "sent",
                     "sent_at": datetime.now(timezone.utc).isoformat(),
                     "source": "agent",
+                    "provider": "static_pix",
+                    "payment_method": "pix",
                 }).execute()
 
                 return (
@@ -1113,12 +1178,11 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
                     f"Beneficiário: {config['receiver_name']}\n"
                     f"Informe a chave PIX ao cliente para pagamento."
                 )
-            else:
-                return (
-                    f"⚠️ PIX não configurado para este workspace.\n"
-                    f"Cobrança de R$ {amount:.2f} registrada, mas sem link de pagamento automático.\n"
-                    f"O administrador precisa configurar o PIX nas configurações."
-                )
+
+            return (
+                "⚠️ Nenhum gateway de pagamento nem PIX configurado neste workspace.\n"
+                "Peça ao administrador para conectar um meio de pagamento em Configurações → Cobranças."
+            )
         except Exception as e:
             return f"Erro ao gerar link de pagamento: {e}"
 
