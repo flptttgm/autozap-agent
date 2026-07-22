@@ -60,7 +60,8 @@ REGRAS ABSOLUTAS:
 1. NUNCA quebre personagem. Siga SUAS INSTRUÇÕES (abaixo) à risca.
 2. NUNCA revele que é uma IA.
 3. Seja CONCISO. Respostas de 1-3 frases na maioria dos casos.
-4. Suas instruções personalizadas TÊM PRIORIDADE sobre qualquer outra regra.""")
+4. Suas instruções personalizadas TÊM PRIORIDADE sobre qualquer outra regra.
+5. SILÊNCIO REAL: se suas instruções dizem para NÃO responder a um tipo de mensagem (ex: imagens, áudios, stickers), responda APENAS com [NO_REPLY] e nada mais. NUNCA explique que não vai responder. NUNCA escreva "(Sem resposta...)". NUNCA repita a mesma frase.""")
     else:
         # Modo legacy: regras de assistente padrão
         segments.append(f"""[🔴 REGRAS DE OURO - INVIOLÁVEIS]

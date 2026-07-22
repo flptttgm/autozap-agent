@@ -17,6 +17,7 @@ from .memory import MemoryManager
 from .rag import RAGEngine
 from .tools import create_tools
 from .prompts import build_system_prompt
+from .response_guard import agent_instructs_silence_for_media, should_suppress_ai_response
 
 
 class AutozapAgent:
@@ -77,6 +78,11 @@ class AutozapAgent:
         # Checar se AI está pausada
         if memory.get("ai_paused"):
             return {"response": None, "status": "ai_paused"}
+
+        # Deterministic silence: custom instructions say not to reply to this media
+        if agent_instructs_silence_for_media(agent_config.get("system_prompt"), message):
+            print("[Agent] Skipping media reply (agent instructed silence)")
+            return {"response": None, "status": "no_reply"}
 
         # 2. RAG - Buscar no knowledge base
         knowledge_context = ""
@@ -167,6 +173,13 @@ class AutozapAgent:
 
         # 7. Converter markdown para WhatsApp
         final_response = self._convert_to_whatsapp(ai_response)
+
+        # 7b. Never deliver meta "I'm not replying" or looped garbage
+        if should_suppress_ai_response(final_response):
+            print(
+                f"[Agent] Suppressing no_reply/loop response: {str(final_response)[:120]!r}"
+            )
+            return {"response": None, "status": "no_reply"}
 
         # 8. SALVAR MEMÓRIA
         new_messages = [
