@@ -15,6 +15,9 @@ import json
 import os
 import httpx
 
+from .stay_tools import create_stay_tools, workspace_has_stay, STAY_TOOL_NAMES
+from .rider_tools import create_rider_tools, workspace_has_rider, RIDER_TOOL_NAMES
+
 
 def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id: str | None = None, enabled_tools: list[str] | None = None):
     """Cria ferramentas contextualizadas para o agente.
@@ -1370,6 +1373,13 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
         "create_followup_task": create_followup_task,
     }
 
+    # Vertical Stay (hospedagem) — habilitadas via enabled_tools quando o
+    # workspace tem o add-on Stay ativo
+    all_tools.update(create_stay_tools(supabase, workspace_id, lead_id))
+
+    # Vertical Rider (mobilidade) — mesma lógica de gating do Stay
+    all_tools.update(create_rider_tools(supabase, workspace_id, lead_id))
+
     if enabled_tools:
         names = list(enabled_tools)
         # Scheduling requires knowing who the professionals are — always pair them.
@@ -1377,5 +1387,11 @@ def create_tools(supabase: Client, workspace_id: str, lead_id: str, instance_id:
             n in names for n in ("check_availability", "schedule_appointment", "check_appointments")
         ):
             names.append("list_professionals")
+        # Stay vertical requires the add-on (or trial) — backend gate.
+        if any(n in names for n in STAY_TOOL_NAMES) and not workspace_has_stay(supabase, workspace_id):
+            names = [n for n in names if n not in STAY_TOOL_NAMES]
+        # Rider vertical requires the add-on (or trial) — backend gate.
+        if any(n in names for n in RIDER_TOOL_NAMES) and not workspace_has_rider(supabase, workspace_id):
+            names = [n for n in names if n not in RIDER_TOOL_NAMES]
         return [all_tools[name] for name in names if name in all_tools]
     return list(all_tools.values())

@@ -157,7 +157,7 @@ Você tem acesso às seguintes ferramentas: {', '.join(enabled_tools)}
 {tool_descriptions}
 - Use-as PROATIVAMENTE quando perceber a necessidade.
 - SEMPRE confirme com o cliente ANTES de executar ações definitivas.
-- AGENDAMENTO COM PROFISSIONAIS: se list_professionals retornar profissionais cadastrados, todo agendamento deve ser com um profissional específico. Ofereça a lista, pergunte com quem o cliente quer marcar e passe o nome no parâmetro 'professional' de check_availability e schedule_appointment.""")
+- AGENDAMENTO COM PROFISSIONAIS: se list_professionals retornar profissionais cadastrados, todo agendamento deve ser com um profissional específico. Ofereça a lista, pergunte com quem o cliente quer marcar e passe o nome no parâmetro 'professional' de check_availability e schedule_appointment.{_stay_guidelines(enabled_tools)}{_rider_guidelines(enabled_tools)}""")
     elif not custom_prompt:
         # Só mostra ferramentas padrão no modo legacy (sem prompt customizado)
         segments.append("""[🔧 USO DE FERRAMENTAS]
@@ -193,6 +193,29 @@ INICIATIVA:
     return parts
 
 
+def _stay_guidelines(enabled_tools: list[str]) -> str:
+    """Diretrizes do vertical Stay (hospedagem) quando as tools estão ativas."""
+    if not any(t.startswith(("check_stay", "quote_stay", "create_stay", "manage_stay")) for t in enabled_tools):
+        return ""
+    return """
+- HOSPEDAGEM (Stay): fluxo obrigatório = 1) check_stay_availability com as datas → 2) quote_stay da unidade escolhida → 3) confirmar nome completo e dados → 4) create_stay_reservation (gera o Pix do sinal automaticamente).
+- Colete SEMPRE: data de entrada, data de saída e número de hóspedes antes de consultar disponibilidade.
+- Responda no MESMO IDIOMA do hóspede (português, inglês, espanhol etc.). Datas sempre confirmadas por extenso (ex: "15 de agosto") para evitar ambiguidade.
+- A reserva só é confirmada após o pagamento do sinal — deixe isso claro ao hóspede."""
+
+
+def _rider_guidelines(enabled_tools: list[str]) -> str:
+    """Diretrizes do vertical Rider (mobilidade) quando as tools estão ativas."""
+    if not any(t in enabled_tools for t in ("quote_ride", "request_ride", "check_ride_status", "cancel_ride")):
+        return ""
+    return """
+- MOBILIDADE (Rider): fluxo obrigatório = 1) coletar origem e destino → 2) quote_ride → 3) passageiro aprova o valor → 4) request_ride (despacha o motorista automaticamente).
+- Se o endereço for vago, peça rua, número e bairro OU peça para compartilhar a localização pelo WhatsApp (clipe 📎 → Localização). Mensagens '[Localização 📍] lat,lng' já contêm coordenadas — use-as direto como origem/destino.
+- NUNCA invente valor de corrida: o preço vem SEMPRE do quote_ride.
+- Após request_ride, avise que confirmaremos assim que um motorista aceitar. Use check_ride_status se o passageiro perguntar o andamento.
+- Confirme com o passageiro antes de cancel_ride."""
+
+
 def _get_tool_descriptions(enabled_tools: list[str]) -> str:
     """Retorna descrições contextuais das ferramentas habilitadas."""
     descs = {
@@ -203,6 +226,14 @@ def _get_tool_descriptions(enabled_tools: list[str]) -> str:
         "get_lead_info": "- get_lead_info: Buscar dados cadastrais do cliente",
         "send_quote": "- send_quote: Criar um NOVO orçamento (apenas para primeiro orçamento, nunca para reduzir preço)",
         "request_price_change": "- request_price_change: Solicitar revisão de preço de orçamento EXISTENTE quando o cliente achar caro, pedir desconto ou não ter dinheiro. NÃO crie novo orçamento para isso — use ESTA ferramenta",
+        "check_stay_availability": "- check_stay_availability: Consultar unidades de hospedagem livres no período (SEMPRE antes de cotar ou reservar)",
+        "quote_stay": "- quote_stay: Calcular total da estadia + sinal de uma unidade específica",
+        "create_stay_reservation": "- create_stay_reservation: Criar reserva e enviar Pix do sinal (SOMENTE após o hóspede aprovar a cotação)",
+        "manage_stay_reservation": "- manage_stay_reservation: Consultar, cancelar ou remarcar reservas do hóspede",
+        "quote_ride": "- quote_ride: Cotar valor de corrida entre origem e destino (SEMPRE antes de solicitar)",
+        "request_ride": "- request_ride: Solicitar a corrida e acionar motoristas via WhatsApp (SOMENTE após o passageiro aprovar o valor)",
+        "check_ride_status": "- check_ride_status: Consultar andamento da corrida atual do passageiro",
+        "cancel_ride": "- cancel_ride: Cancelar a corrida ativa (confirme antes)",
     }
     return "\n".join(descs.get(t, f"- {t}") for t in enabled_tools)
 
